@@ -11,22 +11,33 @@ function withCors(res) {
   return res;
 }
 
-export async function GET() {
+function safeStr(v) {
+  return typeof v === "string" ? v : v == null ? "" : String(v);
+}
+
+export async function GET(req) {
   if (!process.env.APISPORTS_KEY) {
     console.error("Missing APISPORTS_KEY in environment variables.");
     return withCors(
       NextResponse.json(
-        { error: "Missing APISPORTS_KEY", meciuri: [] },
+        { error: "Missing APISPORTS_KEY", fixtures: [] },
         { status: 500 }
       )
     );
   }
 
-  const today = new Date().toISOString().slice(0, 10);
+  const urlObj = new URL(req.url);
+  const dateParam = urlObj.searchParams.get("date");
+  const date =
+    dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam)
+      ? dateParam
+      : new Date().toISOString().slice(0, 10);
 
   try {
     const res = await fetch(
-      `https://v3.football.api-sports.io/fixtures?date=${today}`,
+      `https://v3.football.api-sports.io/fixtures?date=${encodeURIComponent(
+        date
+      )}`,
       {
         headers: {
           "x-apisports-key": process.env.APISPORTS_KEY,
@@ -35,24 +46,50 @@ export async function GET() {
       }
     );
 
-    const data = await res.json();
+    const data = await res.json().catch(() => null);
 
     if (!res.ok) {
       console.error("API-Football error:", res.status, data);
-      return withCors(NextResponse.json({ meciuri: [] }, { status: 200 }));
+      return withCors(
+        NextResponse.json({ date, fixtures: [] }, { status: 200 })
+      );
     }
 
-    const meciuri =
-      data.response?.map((fx) => ({
-        echipe: `${fx.teams.home.name} vs ${fx.teams.away.name}`,
-        liga: fx.league.name,
-        status: fx.fixture.status.short,
-      })) || [];
+    const fixtures =
+      data?.response?.map((fx) => {
+        const home = fx?.teams?.home || {};
+        const away = fx?.teams?.away || {};
+        const league = fx?.league || {};
+        const fixture = fx?.fixture || {};
 
-    return withCors(NextResponse.json({ meciuri }));
+        return {
+          match_id: fixture?.id ?? null,
+          kickoff: fixture?.date ?? null,
+          status_raw: fixture?.status?.short ?? "",
+
+          league_id: league?.id ?? null,
+          league: safeStr(league?.name),
+          country: safeStr(league?.country),
+          league_logo: safeStr(league?.logo),
+
+          home_id: home?.id ?? null,
+          home_team: safeStr(home?.name),
+          home_logo: safeStr(home?.logo),
+
+          away_id: away?.id ?? null,
+          away_team: safeStr(away?.name),
+          away_logo: safeStr(away?.logo),
+
+          stadium: safeStr(fixture?.venue?.name),
+        };
+      }) || [];
+
+    return withCors(
+      NextResponse.json({ date, count: fixtures.length, fixtures })
+    );
   } catch (err) {
     console.error("Server error in /api/meciuri:", err);
-    return withCors(NextResponse.json({ meciuri: [] }, { status: 200 }));
+    return withCors(NextResponse.json({ date, fixtures: [] }, { status: 200 }));
   }
 }
 
