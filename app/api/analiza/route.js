@@ -13,6 +13,30 @@ function withCors(res) {
   return res;
 }
 
+function cleanPlainText(input) {
+  if (!input) return "";
+  let s = String(input);
+
+  // Remove common markdown tokens and formatting artifacts
+  s = s.replace(/```[\s\S]*?```/g, "");
+  s = s.replace(/`+/g, "");
+  s = s.replace(/^\s{0,3}#{1,6}\s+/gm, "");
+  s = s.replace(/^\s*>\s?/gm, "");
+  s = s.replace(/\*\*([^*]+)\*\*/g, "$1");
+  s = s.replace(/__([^_]+)__/g, "$1");
+  s = s.replace(/\*([^*]+)\*/g, "$1");
+  s = s.replace(/_([^_]+)_/g, "$1");
+  s = s.replace(/^\s*[-•]\s+/gm, "");
+  s = s.replace(/\[(.*?)\]\((.*?)\)/g, "$1");
+
+  // Normalize whitespace
+  s = s.replace(/\r\n/g, "\n");
+  s = s.replace(/\n{3,}/g, "\n\n");
+  s = s.trim();
+
+  return s;
+}
+
 export async function POST(req) {
   if (INTERNAL_KEY) {
     const auth = req.headers.get("authorization") || "";
@@ -50,50 +74,44 @@ export async function POST(req) {
 
   const prompt = `Ești un analist profesionist de pariuri sportive (fotbal). Scrie o analiză clară, structurată și prudentă, în limba română, pentru meciul de mai jos.
 
-DATE MECI
-- Meci: ${echipe}
-- Ligă/Competiție: ${liga}
-- Status: ${status}
-
-CERINȚE DE OUTPUT (format)
-- Răspunsul trebuie să fie în **Markdown**, cu titluri și bullet points.
+IMPORTANT (format):
+- Răspunsul trebuie să fie DOAR text simplu (plain text).
+- NU folosi deloc Markdown și NU folosi simboluri de tip: #, ##, ###, *, **, _, __, \`, >, [ ], ( ).
+- NU folosi liste cu bullet-uri marcate cu '-' sau '•'. Dacă ai nevoie de listă, folosește numerotare simplă: 1), 2), 3).
+- Folosește paragrafe scurte și subtitluri simple scrise ca text normal (ex: "Rezumat", "Context", "Factori cheie"), urmate de două puncte.
 - Fără promisiuni de câștig și fără limbaj de tip „sigur/garantat”.
 - Dacă nu ai suficiente informații, spune explicit ce lipsește și oferă o analiză bazată pe principii generale, fără a inventa date.
 
-1) Rezumat rapid (2–4 propoziții)
-- Contextul meciului și ce ar trebui să urmărească un parior.
+DATE MECI:
+Meci: ${echipe}
+Liga/Competiție: ${liga}
+Status: ${status}
 
-2) Context & dinamică
-- Tipul meciului (campionat/cupă/amical), posibile motivații (clasament/obiective), ritm așteptat.
-- Scenariu probabil de joc (echipă care va controla posesia, tranziții, presing, bloc jos etc.).
+STRUCTURĂ CERUTĂ:
 
-3) Factori cheie (bullet points)
-- Avantaje/dezavantaje tactice probabile.
-- Elemente care pot schimba meciul (gol timpuriu, cartonaș roșu, oboseală, rotații).
-- Impactul statusului (${status}) asupra interpretării (dacă este LIVE, cum se schimbă riscul față de pre-match).
+Rezumat:
+Scrie 2–4 propoziții despre contextul meciului și ce ar trebui să urmărească un parior.
 
-4) Evaluarea riscului
-- Alege un nivel: **Scăzut / Mediu / Ridicat**.
-- Explică pe scurt de ce.
+Context și dinamică:
+Explică tipul meciului (campionat/cupă/amical), posibile motivații (clasament/obiective) și ritmul așteptat. Descrie pe scurt un scenariu probabil de joc (posesie, tranziții, pressing, bloc jos etc.).
 
-5) Direcție probabilă (fără procente inventate)
-- Concluzie argumentată despre direcția probabilă (ex: echipa A are ușor avantaj, meci echilibrat, profil de under/over etc.).
+Factori cheie:
+Scrie 4–6 puncte numerotate (1)–(6) cu avantaje/dezavantaje tactice probabile și elemente care pot schimba meciul (gol timpuriu, cartonaș roșu, oboseală, rotații). Include și cum influențează statusul (${status}) interpretarea (dacă e LIVE, cum se schimbă riscul față de pre-match).
 
-6) Unghiuri de pariere (1–3 opțiuni)
-- Oferă 1–3 idei „reasonable”, în ordinea preferinței, de tip:
-  - rezultat (1X2 sau dublă șansă),
-  - goluri (under/over),
-  - ambele marchează,
-  - handicap asiatic (doar dacă are sens),
-  - pentru LIVE: next goal / under în repriza curentă etc.
-- Pentru fiecare opțiune, include:
-  - **De ce** (argument),
-  - **Condiții de validare** (ce trebuie să fie adevărat ca bet-ul să aibă sens),
-  - **Când NU** (semnale de evitând pariul).
+Evaluarea riscului:
+Alege un nivel: Scăzut / Mediu / Ridicat. Explică pe scurt de ce.
 
-7) Notă de responsabilitate (1 propoziție)
-- Menționează că analiza este informativă și nu reprezintă sfat financiar.
-`;
+Direcție probabilă:
+O concluzie argumentată despre direcția probabilă (ex: echipa A are ușor avantaj, meci echilibrat, profil under/over). NU inventa procente.
+
+Unghiuri de pariere:
+Oferă 1–3 opțiuni numerotate 1)–3), în ordinea preferinței. Pentru fiecare opțiune include:
+Motiv: de ce are sens.
+Condiții: ce trebuie să fie adevărat ca pariul să aibă sens.
+Evită dacă: semnale clare că pariul nu e bun.
+
+Notă:
+O propoziție că analiza este informativă și nu reprezintă sfat financiar.`;
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 20000);
@@ -111,7 +129,7 @@ CERINȚE DE OUTPUT (format)
         model: "mistralai/mistral-7b-instruct",
         messages: [{ role: "user", content: prompt }],
         temperature: 0.7,
-        max_tokens: 350,
+        max_tokens: 700,
       }),
       signal: controller.signal,
     });
@@ -156,7 +174,7 @@ CERINȚE DE OUTPUT (format)
       );
     }
 
-    analysis = analysis.trim();
+    analysis = cleanPlainText(analysis);
 
     return withCors(NextResponse.json({ analysis }));
   } catch (err) {
