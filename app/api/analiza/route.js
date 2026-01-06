@@ -2,32 +2,31 @@ import { NextResponse } from "next/server";
 
 const INTERNAL_KEY = process.env.BETLOGIC_INTERNAL_KEY;
 
-function stripMarkdownBasic(text) {
-  if (!text) return "";
+function stripMarkdownBasic(input = "") {
+  // Best-effort cleanup if the model returns Markdown anyway.
+  // Keep it conservative: remove common formatting tokens.
   return (
-    String(text)
-      // remove code fences
+    String(input)
+      // code fences
       .replace(/```[\s\S]*?```/g, (m) => {
-        // keep code content but remove the fences
-        return m.replace(/```\w*\n?/g, "").replace(/```/g, "");
+        // If there is code inside fences, keep only the inner text without the fences
+        return m.replace(/```[a-zA-Z0-9_-]*\n?/g, "").replace(/```/g, "");
       })
-      // remove inline code backticks
-      .replace(/`+/g, "")
-      // headings like ###
+      // inline code
+      .replace(/`([^`]+)`/g, "$1")
+      // headings like ### Title
       .replace(/^\s{0,3}#{1,6}\s+/gm, "")
-      // bold/italic markers
-      .replace(/\*\*([^*]+)\*\*/g, "$1")
-      .replace(/\*([^*]+)\*/g, "$1")
-      .replace(/__([^_]+)__/g, "$1")
-      .replace(/_([^_]+ toggle?)_/g, "$1")
-      // list markers at line start
-      .replace(/^\s*[-*+]\s+/gm, "")
-      // numbered lists like 1)
-      .replace(/^\s*\d+\)\s+/gm, "")
-      .replace(/^\s*\d+\.\s+/gm, "")
-      // remove stray markdown blockquote markers
-      .replace(/^\s*>\s?/gm, "")
-      // collapse excessive blank lines
+      // bold/italic markers **text** or *text*
+      .replace(/\*\*(.*?)\*\*/g, "$1")
+      .replace(/\*(.*?)\*/g, "$1")
+      // blockquotes
+      .replace(/^\s{0,3}>\s?/gm, "")
+      // list markers (-, *, +, 1.)
+      .replace(/^\s{0,3}[-*+]\s+/gm, "")
+      .replace(/^\s{0,3}\d+\.\s+/gm, "")
+      // stray markdown chars
+      .replace(/[\*_#`]+/g, "")
+      // trim excessive blank lines
       .replace(/\n{3,}/g, "\n\n")
       .trim()
   );
@@ -68,36 +67,47 @@ export async function POST(req) {
     );
   }
 
-  const prompt = `Ești un analist profesionist de fotbal și redactezi o analiză informativă pentru pariori.
+  const prompt = `Ești un analist profesionist de pariuri sportive (fotbal). Scrie o analiză clară, structurată și prudentă, în limba română, pentru meciul de mai jos.
 
-IMPORTANT (FORMAT):
-- Scrie EXCLUSIV în text simplu (plain text). NU folosi Markdown.
-- NU folosi caractere de tip: #, *, **, _, \`, liste cu '-' sau '*' și NU folosi blocuri de cod.
-- Folosește titluri simple scrise ca text normal, urmate de ':' și apoi paragrafe scurte.
-- Separă secțiunile printr-o linie goală.
-- Fără promisiuni de câștig și fără limbaj de tip „sigur/garantat”.
-- Dacă nu ai suficiente date, spune clar ce lipsește și oferă o analiză bazată pe principii generale, fără a inventa statistici.
-- Nu inventa procente.
+IMPORTANT – FORMAT OUTPUT
+- Returnează EXCLUSIV TEXT SIMPLU (plain text).
+- NU folosi Markdown și NU folosi caractere de formatare precum: #, *, **, _, backticks (\`), liste cu "-" sau "•".
+- Nu include titluri cu # sau orice marcaj de tip markdown.
+- Folosește doar propoziții normale și separatoare simple (ex: linii goale) și etichete cu „:”.
 
-DATE MECI:
+DATE MECI
 Meci: ${echipe}
-Competiție: ${liga}
+Ligă/Competiție: ${liga}
 Status: ${status}
 
-STRUCTURĂ CERUTĂ:
-1. Rezumat rapid: 2-4 propoziții cu ideea principală.
-2. Context și dinamică: tipul meciului (campionat/cupă/amical), motivație posibilă, ritm probabil.
-3. Factori cheie: 4-7 puncte scrise ca propoziții separate (fără bullet points), despre tactică, ritm, rotații, risc de cartonașe etc.
-4. Evaluarea riscului: alege un nivel (Scăzut / Mediu / Ridicat) și explică scurt.
-5. Direcție probabilă: concluzie argumentată, fără procente.
-6. Unghiuri de pariere: 1-3 opțiuni „reasonable”, fiecare cu:
-   - Ce: (ex: Dublă șansă, Under/Over, Ambele marchează etc.)
-   - De ce: 1-2 propoziții
-   - Când are sens: condiții de validare
-   - Când NU: semnale clare de evitare
-7. Notă: o propoziție că este conținut informativ, nu sfat financiar.
+CERINȚE
+- Fără promisiuni de câștig și fără limbaj de tip „sigur/garantat”.
+- Dacă nu ai suficiente informații, spune explicit ce lipsește și oferă o analiză bazată pe principii generale, fără a inventa date.
+- Dacă status este LIVE, adaptează analiza pentru context live (ritm, risc crescut, volatilitate).
 
-Răspunde doar cu analiza, fără introduceri despre rolul tău.`;
+STRUCTURĂ (în această ordine, cu etichete și text normal)
+
+Rezumat rapid:
+2–4 propoziții despre context și ce ar trebui urmărit.
+
+Context și dinamică:
+Explică tipul meciului (campionat/cupă/amical), posibile motivații, ritm așteptat și un scenariu probabil de joc.
+
+Factori cheie:
+Menționează 3–6 factori care pot influența decisiv meciul (tactic, ritm, gol timpuriu, cartonaș roșu, rotații, oboseală etc.).
+
+Evaluarea riscului:
+Alege un nivel (Scăzut / Mediu / Ridicat) și explică în 1–2 propoziții.
+
+Direcție probabilă:
+Concluzie argumentată despre direcția probabilă (ex: ușor avantaj pentru una dintre echipe, meci echilibrat, profil de under/over), fără procente inventate.
+
+Unghiuri de pariere:
+Oferă 1–3 idei rezonabile, în ordinea preferinței. Pentru fiecare: de ce, condiții de validare și când nu.
+
+Notă de responsabilitate:
+O singură propoziție că analiza este informativă și nu reprezintă sfat financiar.
+`;
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 20000);
@@ -115,7 +125,7 @@ Răspunde doar cu analiza, fără introduceri despre rolul tău.`;
         model: "mistralai/mistral-7b-instruct",
         messages: [{ role: "user", content: prompt }],
         temperature: 0.7,
-        max_tokens: 350,
+        max_tokens: 700,
       }),
       signal: controller.signal,
     });
@@ -161,6 +171,8 @@ Răspunde doar cu analiza, fără introduceri despre rolul tău.`;
     }
 
     analysis = analysis.trim();
+
+    // Safety net: if the model returns Markdown anyway, normalize to plain text.
     analysis = stripMarkdownBasic(analysis);
 
     return withCors(NextResponse.json({ analysis }));
