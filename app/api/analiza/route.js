@@ -80,23 +80,36 @@ IMPORTANT (format):
 - NU folosi liste cu bullet-uri marcate cu '-' sau '•'. Dacă ai nevoie de listă, folosește numerotare simplă: 1), 2), 3).
 - Folosește paragrafe scurte și subtitluri simple scrise ca text normal (ex: "Rezumat", "Context", "Factori cheie"), urmate de două puncte.
 - Fără promisiuni de câștig și fără limbaj de tip „sigur/garantat”.
-- Dacă nu ai suficiente informații, spune explicit ce lipsește și oferă o analiză bazată pe principii generale, fără a inventa date.
+- NU inventa statistici, procente, scoruri sau informații factuale despre formă (rezultate, goluri, clasament) dacă nu sunt furnizate. Dacă nu ai suficiente informații, spune explicit ce lipsește și oferă o analiză bazată pe principii generale.
 
 DATE MECI:
 Meci: ${echipe}
 Liga/Competiție: ${liga}
 Status: ${status}
 
+INTERPRETAREA STATUSULUI (foarte important):
+- Consideră că meciul este LIVE dacă statusul sugerează desfășurare: 1H, 2H, HT, ET, P, LIVE sau orice variantă asemănătoare.
+- Consideră că meciul NU A ÎNCEPUT dacă statusul sugerează pre-match: NS, TBD, TIMED sau asemănător.
+- Consideră că meciul este TERMINAT dacă statusul sugerează final: FT, AET, PEN, CANC, PST sau asemănător.
+- Dacă statusul este neclar, spune că nu e clar și oferă ambele perspective (pre-match și live) pe scurt.
+
+OBIECTIV:
+- Dacă meciul este LIVE: analizează trecutul apropiat (cum s-ar putea fi ajuns aici), prezentul (ce se observă de obicei în astfel de contexte și ce ar trebui urmărit în timp real) și viitorul apropiat (ce se poate întâmpla în continuare în funcție de scenariu). Menționează explicit că fără date live concrete (scor, minute, șuturi, posesie, cartonașe) nu poți descrie exact ce se întâmplă și explică ce date ar ajuta.
+- Dacă meciul NU A ÎNCEPUT: analizează trecutul (forma probabilă ca principiu, fără rezultate inventate), apoi viitorul (scenarii și predicții prudente). Spune ce date de formă ar fi utile (ultimele 5 meciuri, accidentări, rotații, context de clasament).
+- Dacă meciul este TERMINAT: oferă o analiză scurtă orientată pe lecții și ce ar fi contat (tactici, riscuri), fără a inventa scorul; poți sugera cum se poate face un review dacă utilizatorul oferă scorul și statistici.
+
 STRUCTURĂ CERUTĂ:
 
 Rezumat:
 Scrie 2–4 propoziții despre contextul meciului și ce ar trebui să urmărească un parior.
 
-Context și dinamică:
-Explică tipul meciului (campionat/cupă/amical), posibile motivații (clasament/obiective) și ritmul așteptat. Descrie pe scurt un scenariu probabil de joc (posesie, tranziții, pressing, bloc jos etc.).
+Trecut, prezent, viitor:
+1) Trecut: ce tip de formă și contexte contează la aceste echipe în această ligă, fără a inventa rezultate.
+2) Prezent: în funcție de status, explică ce înseamnă acum pentru risc (pre-match vs live) și ce semnale urmărești.
+3) Viitor: 2–3 scenarii probabile de joc, cu explicații (posesie, tranziții, pressing, bloc jos, oboseală, rotații).
 
 Factori cheie:
-Scrie 4–6 puncte numerotate (1)–(6) cu avantaje/dezavantaje tactice probabile și elemente care pot schimba meciul (gol timpuriu, cartonaș roșu, oboseală, rotații). Include și cum influențează statusul (${status}) interpretarea (dacă e LIVE, cum se schimbă riscul față de pre-match).
+Scrie 4–6 puncte numerotate (1)–(6) cu avantaje/dezavantaje tactice probabile și elemente care pot schimba meciul (gol timpuriu, cartonaș roșu, oboseală, rotații). Include cum influențează statusul (${status}) interpretarea (dacă e LIVE, cum se schimbă riscul față de pre-match).
 
 Evaluarea riscului:
 Alege un nivel: Scăzut / Mediu / Ridicat. Explică pe scurt de ce.
