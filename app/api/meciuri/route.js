@@ -97,3 +97,8 @@ export async function OPTIONS() {
   const res = new NextResponse(null, { status: 204 });
   return withCors(res);
 }
+
+console.log("ENV CHECK:", {
+  APISPORTS_KEY: !!process.env.APISPORTS_KEY,
+  OPENROUTER_API_KEY: !!process.env.OPENROUTER_API_KEY,
+});

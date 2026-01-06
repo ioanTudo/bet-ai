@@ -48,16 +48,52 @@ export async function POST(req) {
     );
   }
 
-  const prompt = `Analyze this football match as a betting analyst:
-Match: ${echipe}
-League: ${liga}
-Status: ${status}
+  const prompt = `Ești un analist profesionist de pariuri sportive (fotbal). Scrie o analiză clară, structurată și prudentă, în limba română, pentru meciul de mai jos.
 
-Give:
-- short context/form
-- likely outcome
-- risk level (Low/Medium/High)
-- 1-2 betting angles (if reasonable).`;
+DATE MECI
+- Meci: ${echipe}
+- Ligă/Competiție: ${liga}
+- Status: ${status}
+
+CERINȚE DE OUTPUT (format)
+- Răspunsul trebuie să fie în **Markdown**, cu titluri și bullet points.
+- Fără promisiuni de câștig și fără limbaj de tip „sigur/garantat”.
+- Dacă nu ai suficiente informații, spune explicit ce lipsește și oferă o analiză bazată pe principii generale, fără a inventa date.
+
+1) Rezumat rapid (2–4 propoziții)
+- Contextul meciului și ce ar trebui să urmărească un parior.
+
+2) Context & dinamică
+- Tipul meciului (campionat/cupă/amical), posibile motivații (clasament/obiective), ritm așteptat.
+- Scenariu probabil de joc (echipă care va controla posesia, tranziții, presing, bloc jos etc.).
+
+3) Factori cheie (bullet points)
+- Avantaje/dezavantaje tactice probabile.
+- Elemente care pot schimba meciul (gol timpuriu, cartonaș roșu, oboseală, rotații).
+- Impactul statusului (${status}) asupra interpretării (dacă este LIVE, cum se schimbă riscul față de pre-match).
+
+4) Evaluarea riscului
+- Alege un nivel: **Scăzut / Mediu / Ridicat**.
+- Explică pe scurt de ce.
+
+5) Direcție probabilă (fără procente inventate)
+- Concluzie argumentată despre direcția probabilă (ex: echipa A are ușor avantaj, meci echilibrat, profil de under/over etc.).
+
+6) Unghiuri de pariere (1–3 opțiuni)
+- Oferă 1–3 idei „reasonable”, în ordinea preferinței, de tip:
+  - rezultat (1X2 sau dublă șansă),
+  - goluri (under/over),
+  - ambele marchează,
+  - handicap asiatic (doar dacă are sens),
+  - pentru LIVE: next goal / under în repriza curentă etc.
+- Pentru fiecare opțiune, include:
+  - **De ce** (argument),
+  - **Condiții de validare** (ce trebuie să fie adevărat ca bet-ul să aibă sens),
+  - **Când NU** (semnale de evitând pariul).
+
+7) Notă de responsabilitate (1 propoziție)
+- Menționează că analiza este informativă și nu reprezintă sfat financiar.
+`;
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 20000);
