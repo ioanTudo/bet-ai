@@ -2,6 +2,27 @@ import { NextResponse } from "next/server";
 
 const INTERNAL_KEY = process.env.BETLOGIC_INTERNAL_KEY;
 
+// Simple in-memory cache (best-effort). Helps performance and reduces 502s from upstream.
+// Note: Vercel/serverless may evict between invocations; still useful under load.
+const ANALYSIS_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const __cache =
+  globalThis.__betlogicAnalysisCache ||
+  (globalThis.__betlogicAnalysisCache = new Map());
+
+function cacheGet(key) {
+  const hit = __cache.get(key);
+  if (!hit) return null;
+  if (Date.now() > hit.expiresAt) {
+    __cache.delete(key);
+    return null;
+  }
+  return hit.value;
+}
+
+function cacheSet(key, value, ttlMs = ANALYSIS_TTL_MS) {
+  __cache.set(key, { value, expiresAt: Date.now() + ttlMs });
+}
+
 function withCors(res) {
   const origin = process.env.WP_ORIGIN || "*";
   res.headers.set("Access-Control-Allow-Origin", origin);
@@ -94,6 +115,125 @@ function isValidAnalysisText(raw) {
   return hasNumbered && (hasScenarii || hasRecomand);
 }
 
+async function callOpenRouter(userPrompt, attempt) {
+  // We keep this relatively short for performance. If OpenRouter is slow/unavailable,
+  // we retry once (or twice) with backoff and a lower temperature.
+  const maxAttempts = 3;
+  const baseTimeoutMs = 22000; // avoid premature aborts (often the #1 source of 502)
+
+  const isRetryableStatus = (status) =>
+    status === 408 ||
+    status === 409 ||
+    status === 425 ||
+    status === 429 ||
+    status === 500 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504;
+
+  for (let i = attempt; i <= maxAttempts; i++) {
+    const controller = new AbortController();
+    const timeoutMs = baseTimeoutMs + (i - 1) * 4000; // progressive timeout
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": process.env.HTTP_REFERER || "https://betlogic.ro",
+          "X-Title": process.env.APP_TITLE || "BetLogic",
+        },
+        body: JSON.stringify({
+          model:
+            process.env.OPENROUTER_MODEL || "mistralai/mistral-7b-instruct",
+          messages: [{ role: "user", content: userPrompt }],
+          temperature: i === 1 ? 0.5 : 0.2,
+          max_tokens: 650,
+        }),
+        signal: controller.signal,
+      });
+
+      const contentType = r.headers.get("content-type") || "";
+      const isJson = contentType.includes("application/json");
+
+      // If OpenRouter/CDN returns HTML (common on 502/504), treat as retryable.
+      if (!isJson) {
+        const text = await r.text();
+        clearTimeout(timeoutId);
+
+        const status = r.status || 502;
+        const errObj = {
+          ok: false,
+          status: isRetryableStatus(status) ? status : 502,
+          error: "Non-JSON response from OpenRouter",
+          raw: text?.slice?.(0, 8000) || text,
+        };
+
+        if (i < maxAttempts) {
+          await new Promise((res) => setTimeout(res, 300 * i));
+          continue;
+        }
+
+        return errObj;
+      }
+
+      const data = await r.json();
+      clearTimeout(timeoutId);
+
+      if (!r.ok) {
+        const status = r.status || 502;
+        const errObj = {
+          ok: false,
+          status,
+          error: data?.error?.message || "OpenRouter request failed",
+          raw: data,
+        };
+
+        // Retry on transient statuses
+        if (i < maxAttempts && isRetryableStatus(status)) {
+          await new Promise((res) => setTimeout(res, 350 * i));
+          continue;
+        }
+
+        return errObj;
+      }
+
+      const rawText = data?.choices?.[0]?.message?.content || "";
+      return { ok: true, status: 200, rawText };
+    } catch (err) {
+      clearTimeout(timeoutId);
+
+      const msg = String(err?.message || err);
+      const aborted =
+        msg.toLowerCase().includes("aborted") ||
+        msg.toLowerCase().includes("abort");
+
+      const errObj = {
+        ok: false,
+        status: aborted ? 504 : 502,
+        error: aborted ? "OpenRouter timeout" : "OpenRouter fetch failed",
+        raw: msg,
+      };
+
+      if (i < maxAttempts) {
+        await new Promise((res) => setTimeout(res, 400 * i));
+        continue;
+      }
+
+      return errObj;
+    }
+  }
+
+  return {
+    ok: false,
+    status: 502,
+    error: "OpenRouter request failed",
+    raw: "unknown",
+  };
+}
+
 export async function POST(req) {
   if (INTERNAL_KEY) {
     const auth = req.headers.get("authorization") || "";
@@ -127,6 +267,17 @@ export async function POST(req) {
     return withCors(
       NextResponse.json({ error: "Date incomplete" }, { status: 400 })
     );
+  }
+
+  // Best-effort cache to avoid repeated calls (improves speed + reduces 502s)
+  const cacheKey = `${String(echipe).trim()}|${String(liga).trim()}|${String(
+    status || ""
+  ).trim()}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) {
+    const res = NextResponse.json({ analysis: cached });
+    res.headers.set("Cache-Control", "public, max-age=60");
+    return withCors(res);
   }
 
   const promptBase = `Acționează ca un Senior Risk Manager și Analist Sportiv de elită. Generează o analiză tehnică, ultra-concisă și orientată strict pe profitabilitate și risc pentru meciul specificat.
@@ -174,69 +325,6 @@ B) Scenariu de risc: Ce poate răsturna calculul hârtiei.
 NIVEL DE RISC: Scăzut / Mediu / Ridicat (Argumentează într-o singură propoziție).
 `;
 
-  async function callOpenRouter(userPrompt, attempt) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000);
-
-    try {
-      const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": process.env.HTTP_REFERER || "https://betlogic.ro",
-          "X-Title": process.env.APP_TITLE || "BetLogic",
-        },
-        body: JSON.stringify({
-          model: "mistralai/mistral-7b-instruct",
-          messages: [{ role: "user", content: userPrompt }],
-          temperature: attempt === 1 ? 0.6 : 0.2,
-          max_tokens: 700,
-        }),
-        signal: controller.signal,
-      });
-
-      const contentType = r.headers.get("content-type") || "";
-      const isJson = contentType.includes("application/json");
-
-      let data;
-      if (isJson) {
-        data = await r.json();
-      } else {
-        const text = await r.text();
-        clearTimeout(timeoutId);
-        return {
-          ok: false,
-          status: 502,
-          error: "Non-JSON response from OpenRouter",
-          raw: text,
-        };
-      }
-
-      clearTimeout(timeoutId);
-
-      if (!r.ok) {
-        return {
-          ok: false,
-          status: r.status,
-          error: data?.error?.message || "OpenRouter request failed",
-          raw: data,
-        };
-      }
-
-      const rawText = data?.choices?.[0]?.message?.content || "";
-      return { ok: true, status: 200, rawText };
-    } catch (err) {
-      clearTimeout(timeoutId);
-      return {
-        ok: false,
-        status: 502,
-        error: "OpenRouter fetch failed",
-        raw: String(err?.message || err),
-      };
-    }
-  }
-
   try {
     // Attempt 1: normal prompt
     let prompt = promptBase;
@@ -246,7 +334,7 @@ NIVEL DE RISC: Scăzut / Mediu / Ridicat (Argumentează într-o singură propozi
       console.error("❌ OpenRouter error:", resp1);
       return withCors(
         NextResponse.json(
-          { error: resp1.error, raw: resp1.raw },
+          { error: resp1.error },
           { status: resp1.status || 502 }
         )
       );
@@ -264,7 +352,7 @@ NIVEL DE RISC: Scăzut / Mediu / Ridicat (Argumentează într-o singură propozi
         console.error("❌ OpenRouter error (retry):", resp2);
         return withCors(
           NextResponse.json(
-            { error: resp2.error, raw: resp2.raw },
+            { error: resp2.error },
             { status: resp2.status || 502 }
           )
         );
@@ -288,7 +376,10 @@ NIVEL DE RISC: Scăzut / Mediu / Ridicat (Argumentează într-o singură propozi
       }
     }
 
-    return withCors(NextResponse.json({ analysis }));
+    cacheSet(cacheKey, analysis);
+    const res = NextResponse.json({ analysis });
+    res.headers.set("Cache-Control", "public, max-age=60");
+    return withCors(res);
   } catch (err) {
     console.error("🔥 Server error:", err);
     return withCors(
