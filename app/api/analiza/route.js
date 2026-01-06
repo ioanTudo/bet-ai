@@ -131,45 +131,47 @@ export async function POST(req) {
 
   const promptBase = `Acționează ca un Senior Risk Manager și Analist Sportiv de elită. Generează o analiză tehnică, ultra-concisă și orientată strict pe profitabilitate și risc pentru meciul specificat.
 
+INSTRUCȚIUNI DE LIMBĂ ȘI STATUS (OBLIGATORIU):
+- LIMBĂ: Scrie în limba română perfectă, naturală și cursivă.
+- FĂRĂ CODURI: Tradu orice status tehnic în română clară (ex: "NS" -> "Meciul nu a început"; "1H" -> "Prima Repriză"; "HT" -> "Pauză"; "FT" -> "Final de meci").
+
 INSTRUCȚIUNI DE FORMAT (CRITIC):
 - Output: DOAR text simplu (plain text).
-- STRICT INTERZIS: Markdown, bold, italic, simboluri (#, *, _, \`), liste cu bullet-uri (folosește "1)", "2)" etc).
-- STRICT INTERZIS: orice cod, JSON, HTML, tag-uri, backticks, sau blocuri de tip \`\`\`.
-- NU include: "{" , "}" , "<" , ">" , "import" , "export" , "function" , "class" , "<?php".
-- STIL: Profesional, chirurgical, fără cuvinte de umplutură. Densitate mare de informație în puține cuvinte.
-- NU inventa statistici. Dacă lipsesc datele, bazează-te pe arhetipul echipelor și dinamica ligii.
+- STRICT INTERZIS: Markdown, bold, italic, simboluri (#, *, _, \`), liste cu bullet-uri.
+- STRUCTURĂ: Folosește exact numerotarea 1), 2), 3) etc.
+- STIL: Chirurgical, dens, fără umplutură.
 
 DATE INTRARE:
 Meci: ${echipe}
 Liga: ${liga}
-Status: ${status} (Interpretează: LIVE sau PRE-MATCH în funcție de cod; dacă e FINAL, rezumă factorul decisiv și ce înseamnă pentru următorul meci).
+Status curent: ${status}
 
-REGULI LIVE vs PRE-MATCH:
-- Dacă e LIVE: fă analiză pe trecut (formă recentă), prezent (dinamica scor/timp, cine forțează, cine gestionează), viitor (ce e mai probabil să se întâmple până la final + trigger-e).
-- Dacă NU a început: fă analiză pe trecut (formă/stil), prezent (match-up tactic), viitor (scenarii probabile pentru primele 30 min și final).
+OBIECTIVUL ANALIZEI:
+Oferă informația pe care casele de pariuri ar prefera să o ignore jucătorii. Concentrează-te pe valoare (value betting) și riscuri ascunse.
 
-STRUCTURA ANALIZEI (folosește exact aceste secțiuni numerotate):
+STRUCTURA ANALIZEI:
 
 1) CONTEXT ȘI MIZE:
-Maxim 2 fraze.
+Maxim 2 fraze. Menționează clar stadiul meciului (tradus în română) și motivația reală a echipelor (luptă la titlu, evitare retrogradare, meci amical deghizat etc.).
 
 2) DINAMICA TACTICĂ:
-Maxim 4 fraze.
+Maxim 3-4 fraze. Descrie "match-up-ul": cum se lovește atacul unei echipe de apărarea celeilalte? (Ex: "Echipa gazdă domină posesia steril, oaspeții sunt letali pe contraatac").
 
-3) PUNCTE CRITICE DE INTERES:
-1) ...
-2) ...
-3) ...
+3) PUNCTE CRITICE DE INTERES (RESEARCH AVANSAT):
+Aici trebuie să oferi "aurul" pentru pariori. Include 3 puncte numerotate distinct:
+1) Situația lotului & Impact: Nu enumera doar accidentații, ci explică impactul (ex: "Lipsește golgheterul X, deci forța ofensivă scade cu 40%").
+2) Statistici de nișă: Caută tendințe specifice (ex: cornere, cartonașe, goluri marcate târziu, eficiență acasă vs deplasare).
+3) Factori X: Elemente externe care pot decide meciul (ex: arbitru care dă ușor cartonașe, starea gazonului, oboseală după cupă europeană, conflicte interne).
 
 4) SCENARII PROBABILE:
-A) Scenariu principal: ...
-B) Scenariu de risc: ...
+A) Scenariu principal: Ce este logic să se întâmple (ex: victorie scurtă, meci închis).
+B) Scenariu de risc: Ce poate răsturna calculul hârtiei.
 
-5) RECOMANDĂRI (UNGHURI DE PARIERE):
-1) Selecție principală: [Tip pariu] - [Motiv în 5-8 cuvinte]
-2) Selecție alternativă/Live: [Tip pariu] - [Condiție necesară]
+5) RECOMANDĂRI (UNGHIURI DE PARIERE):
+1) Selecție principală: [Tip pariu] - [Argument scurt bazat pe statistică/tactică]
+2) Selecție alternativă/Live: [Tip pariu] - [Condiția necesară (ex: dacă nu se marchează în primele 20 min)]
 
-NIVEL DE RISC: Scăzut / Mediu / Ridicat (1 propoziție cu motiv).
+NIVEL DE RISC: Scăzut / Mediu / Ridicat (Argumentează într-o singură propoziție).
 `;
 
   async function callOpenRouter(userPrompt, attempt) {
