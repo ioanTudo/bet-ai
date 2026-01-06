@@ -2,15 +2,35 @@ import { NextResponse } from "next/server";
 
 const INTERNAL_KEY = process.env.BETLOGIC_INTERNAL_KEY;
 
-function withCors(res) {
-  const origin = process.env.WP_ORIGIN || "*";
-  res.headers.set("Access-Control-Allow-Origin", origin);
-  res.headers.set("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.headers.set(
-    "Access-Control-Allow-Headers",
-    "Content-Type, Authorization"
+function stripMarkdownBasic(text) {
+  if (!text) return "";
+  return (
+    String(text)
+      // remove code fences
+      .replace(/```[\s\S]*?```/g, (m) => {
+        // keep code content but remove the fences
+        return m.replace(/```\w*\n?/g, "").replace(/```/g, "");
+      })
+      // remove inline code backticks
+      .replace(/`+/g, "")
+      // headings like ###
+      .replace(/^\s{0,3}#{1,6}\s+/gm, "")
+      // bold/italic markers
+      .replace(/\*\*([^*]+)\*\*/g, "$1")
+      .replace(/\*([^*]+)\*/g, "$1")
+      .replace(/__([^_]+)__/g, "$1")
+      .replace(/_([^_]+ toggle?)_/g, "$1")
+      // list markers at line start
+      .replace(/^\s*[-*+]\s+/gm, "")
+      // numbered lists like 1)
+      .replace(/^\s*\d+\)\s+/gm, "")
+      .replace(/^\s*\d+\.\s+/gm, "")
+      // remove stray markdown blockquote markers
+      .replace(/^\s*>\s?/gm, "")
+      // collapse excessive blank lines
+      .replace(/\n{3,}/g, "\n\n")
+      .trim()
   );
-  return res;
 }
 
 export async function POST(req) {
@@ -48,52 +68,36 @@ export async function POST(req) {
     );
   }
 
-  const prompt = `Ești un analist profesionist de pariuri sportive (fotbal). Scrie o analiză clară, structurată și prudentă, în limba română, pentru meciul de mai jos.
+  const prompt = `Ești un analist profesionist de fotbal și redactezi o analiză informativă pentru pariori.
 
-DATE MECI
-- Meci: ${echipe}
-- Ligă/Competiție: ${liga}
-- Status: ${status}
-
-CERINȚE DE OUTPUT (format)
-- Răspunsul trebuie să fie în **Markdown**, cu titluri și bullet points.
+IMPORTANT (FORMAT):
+- Scrie EXCLUSIV în text simplu (plain text). NU folosi Markdown.
+- NU folosi caractere de tip: #, *, **, _, \`, liste cu '-' sau '*' și NU folosi blocuri de cod.
+- Folosește titluri simple scrise ca text normal, urmate de ':' și apoi paragrafe scurte.
+- Separă secțiunile printr-o linie goală.
 - Fără promisiuni de câștig și fără limbaj de tip „sigur/garantat”.
-- Dacă nu ai suficiente informații, spune explicit ce lipsește și oferă o analiză bazată pe principii generale, fără a inventa date.
+- Dacă nu ai suficiente date, spune clar ce lipsește și oferă o analiză bazată pe principii generale, fără a inventa statistici.
+- Nu inventa procente.
 
-1) Rezumat rapid (2–4 propoziții)
-- Contextul meciului și ce ar trebui să urmărească un parior.
+DATE MECI:
+Meci: ${echipe}
+Competiție: ${liga}
+Status: ${status}
 
-2) Context & dinamică
-- Tipul meciului (campionat/cupă/amical), posibile motivații (clasament/obiective), ritm așteptat.
-- Scenariu probabil de joc (echipă care va controla posesia, tranziții, presing, bloc jos etc.).
+STRUCTURĂ CERUTĂ:
+1. Rezumat rapid: 2-4 propoziții cu ideea principală.
+2. Context și dinamică: tipul meciului (campionat/cupă/amical), motivație posibilă, ritm probabil.
+3. Factori cheie: 4-7 puncte scrise ca propoziții separate (fără bullet points), despre tactică, ritm, rotații, risc de cartonașe etc.
+4. Evaluarea riscului: alege un nivel (Scăzut / Mediu / Ridicat) și explică scurt.
+5. Direcție probabilă: concluzie argumentată, fără procente.
+6. Unghiuri de pariere: 1-3 opțiuni „reasonable”, fiecare cu:
+   - Ce: (ex: Dublă șansă, Under/Over, Ambele marchează etc.)
+   - De ce: 1-2 propoziții
+   - Când are sens: condiții de validare
+   - Când NU: semnale clare de evitare
+7. Notă: o propoziție că este conținut informativ, nu sfat financiar.
 
-3) Factori cheie (bullet points)
-- Avantaje/dezavantaje tactice probabile.
-- Elemente care pot schimba meciul (gol timpuriu, cartonaș roșu, oboseală, rotații).
-- Impactul statusului (${status}) asupra interpretării (dacă este LIVE, cum se schimbă riscul față de pre-match).
-
-4) Evaluarea riscului
-- Alege un nivel: **Scăzut / Mediu / Ridicat**.
-- Explică pe scurt de ce.
-
-5) Direcție probabilă (fără procente inventate)
-- Concluzie argumentată despre direcția probabilă (ex: echipa A are ușor avantaj, meci echilibrat, profil de under/over etc.).
-
-6) Unghiuri de pariere (1–3 opțiuni)
-- Oferă 1–3 idei „reasonable”, în ordinea preferinței, de tip:
-  - rezultat (1X2 sau dublă șansă),
-  - goluri (under/over),
-  - ambele marchează,
-  - handicap asiatic (doar dacă are sens),
-  - pentru LIVE: next goal / under în repriza curentă etc.
-- Pentru fiecare opțiune, include:
-  - **De ce** (argument),
-  - **Condiții de validare** (ce trebuie să fie adevărat ca bet-ul să aibă sens),
-  - **Când NU** (semnale de evitând pariul).
-
-7) Notă de responsabilitate (1 propoziție)
-- Menționează că analiza este informativă și nu reprezintă sfat financiar.
-`;
+Răspunde doar cu analiza, fără introduceri despre rolul tău.`;
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 20000);
@@ -157,6 +161,7 @@ CERINȚE DE OUTPUT (format)
     }
 
     analysis = analysis.trim();
+    analysis = stripMarkdownBasic(analysis);
 
     return withCors(NextResponse.json({ analysis }));
   } catch (err) {
