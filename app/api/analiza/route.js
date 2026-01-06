@@ -72,57 +72,46 @@ export async function POST(req) {
     );
   }
 
-  const prompt = `Ești un analist profesionist de pariuri sportive (fotbal). Scrie o analiză clară, structurată și prudentă, în limba română, pentru meciul de mai jos.
+  const prompt = `Acționează ca un Senior Risk Manager și Analist Sportiv de elită. Generează o analiză tehnică, ultra-concisă și orientată strict pe profitabilitate și risc pentru meciul specificat.
 
-IMPORTANT (format):
-- Răspunsul trebuie să fie DOAR text simplu (plain text).
-- NU folosi deloc Markdown și NU folosi simboluri de tip: #, ##, ###, *, **, _, __, \`, >, [ ], ( ).
-- NU folosi liste cu bullet-uri marcate cu '-' sau '•'. Dacă ai nevoie de listă, folosește numerotare simplă: 1), 2), 3).
-- Folosește paragrafe scurte și subtitluri simple scrise ca text normal (ex: "Rezumat", "Context", "Factori cheie"), urmate de două puncte.
-- Fără promisiuni de câștig și fără limbaj de tip „sigur/garantat”.
-- NU inventa statistici, procente, scoruri sau informații factuale despre formă (rezultate, goluri, clasament) dacă nu sunt furnizate. Dacă nu ai suficiente informații, spune explicit ce lipsește și oferă o analiză bazată pe principii generale.
-
-DATE MECI:
-Meci: ${echipe}
-Liga/Competiție: ${liga}
-Status: ${status}
-
-INTERPRETAREA STATUSULUI (foarte important):
-- Consideră că meciul este LIVE dacă statusul sugerează desfășurare: 1H, 2H, HT, ET, P, LIVE sau orice variantă asemănătoare.
-- Consideră că meciul NU A ÎNCEPUT dacă statusul sugerează pre-match: NS, TBD, TIMED sau asemănător.
-- Consideră că meciul este TERMINAT dacă statusul sugerează final: FT, AET, PEN, CANC, PST sau asemănător.
-- Dacă statusul este neclar, spune că nu e clar și oferă ambele perspective (pre-match și live) pe scurt.
-
-OBIECTIV:
-- Dacă meciul este LIVE: analizează trecutul apropiat (cum s-ar putea fi ajuns aici), prezentul (ce se observă de obicei în astfel de contexte și ce ar trebui urmărit în timp real) și viitorul apropiat (ce se poate întâmpla în continuare în funcție de scenariu). Menționează explicit că fără date live concrete (scor, minute, șuturi, posesie, cartonașe) nu poți descrie exact ce se întâmplă și explică ce date ar ajuta.
-- Dacă meciul NU A ÎNCEPUT: analizează trecutul (forma probabilă ca principiu, fără rezultate inventate), apoi viitorul (scenarii și predicții prudente). Spune ce date de formă ar fi utile (ultimele 5 meciuri, accidentări, rotații, context de clasament).
-- Dacă meciul este TERMINAT: oferă o analiză scurtă orientată pe lecții și ce ar fi contat (tactici, riscuri), fără a inventa scorul; poți sugera cum se poate face un review dacă utilizatorul oferă scorul și statistici.
-
-STRUCTURĂ CERUTĂ:
-
-Rezumat:
-Scrie 2–4 propoziții despre contextul meciului și ce ar trebui să urmărească un parior.
-
-Trecut, prezent, viitor:
-1) Trecut: ce tip de formă și contexte contează la aceste echipe în această ligă, fără a inventa rezultate.
-2) Prezent: în funcție de status, explică ce înseamnă acum pentru risc (pre-match vs live) și ce semnale urmărești.
-3) Viitor: 2–3 scenarii probabile de joc, cu explicații (posesie, tranziții, pressing, bloc jos, oboseală, rotații).
-
-Factori cheie:
-Scrie 4–6 puncte numerotate (1)–(6) cu avantaje/dezavantaje tactice probabile și elemente care pot schimba meciul (gol timpuriu, cartonaș roșu, oboseală, rotații). Include cum influențează statusul (${status}) interpretarea (dacă e LIVE, cum se schimbă riscul față de pre-match).
-
-Evaluarea riscului:
-Alege un nivel: Scăzut / Mediu / Ridicat. Explică pe scurt de ce.
-
-Direcție probabilă:
-O concluzie argumentată despre direcția probabilă (ex: echipa A are ușor avantaj, meci echilibrat, profil under/over). NU inventa procente.
-
-Unghiuri de pariere:
-Oferă 1–3 opțiuni numerotate 1)–3), în ordinea preferinței. Pentru fiecare opțiune include:
-Motiv: de ce are sens.
-Condiții: ce trebuie să fie adevărat ca pariul să aibă sens.
-Evită dacă: semnale clare că pariul nu e bun.
-`;
+  INSTRUCȚIUNI DE FORMAT (CRITIC):
+  - Output: DOAR text simplu (plain text).
+  - STRICT INTERZIS: Markdown, bold, italic, simboluri (#, *, _), liste cu bullet-uri (folosește "1)", "2)" etc).
+  - STIL: Profesional, chirurgical, fără cuvinte de umplutură. Densitate mare de informație în puține cuvinte.
+  - NU inventa statistici. Dacă lipsesc datele, bazează-te pe arhetipul echipelor și dinamica ligii.
+  
+  DATE INTRARE:
+  Meci: ${echipe}
+  Liga: ${liga}
+  Status: ${status} (Interpretează: LIVE, PRE-MATCH sau FINAL în funcție de cod).
+  
+  STRUCTURA ANALIZEI:
+  
+  1. CONTEXT ȘI MIZE:
+  Maximum 2 fraze. Ce tip de meci este (derby, luptă la retrogradare, relaxare)? Cum influențează motivația?
+  
+  2. DINAMICA TACTICĂ (Esentia analizei):
+  Explică scurt "match-up-ul":
+  - Dacă e LIVE: Ce spune scorul/timpul despre urgența tactică? Cine forțează, cine se apără supraaglomerat?
+  - Dacă e PRE-MATCH: Stil vs Stil (ex: Posesie vs Contraatac). Unde e dezechilibrul?
+  - Dacă e FINAL: Ce factor a decis meciul (eroare, dominare, tactic)?
+  
+  3. PUNCTE CRITICE DE INTERES:
+  Enumeră numerotat 1), 2), 3) cei mai importanți factori care pot "rupe" meciul (ex: oboseală minutul 70, vulnerabilitate pe flancuri, istoric de cartonașe, presiunea publicului).
+  
+  4. SCENARII PROBABILE:
+  Scurt și la obiect.
+  A) Scenariu Principal: Ce este cel mai logic să se întâmple.
+  B) Scenariu de Risc: Ce ar putea da totul peste cap.
+  
+  5. RECOMANDARE (UNGHIURI DE PARIERE):
+  Oferă 2 direcții clare, bazate pe valoare, nu pe siguranță oarbă.
+  Format:
+  1) Selecție principală: [Tip pariu] - [Motiv în 5 cuvinte]
+  2) Selecție alternativă/Live: [Tip pariu] - [Condiție necesară]
+  
+  NIVEL DE RISC: Scăzut / Mediu / Ridicat (Argumentează într-o propoziție).
+  `;
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 20000);
