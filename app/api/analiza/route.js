@@ -109,9 +109,7 @@ Oferă 1–3 opțiuni numerotate 1)–3), în ordinea preferinței. Pentru fieca
 Motiv: de ce are sens.
 Condiții: ce trebuie să fie adevărat ca pariul să aibă sens.
 Evită dacă: semnale clare că pariul nu e bun.
-
-Notă:
-O propoziție că analiza este informativă și nu reprezintă sfat financiar.`;
+`;
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 20000);
