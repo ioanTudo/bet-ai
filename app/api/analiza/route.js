@@ -37,6 +37,63 @@ function cleanPlainText(input) {
   return s;
 }
 
+function looksLikeCodeOrMarkup(raw) {
+  const s = String(raw || "");
+  const lower = s.toLowerCase();
+
+  // Strong signals for code/markup/data dumps
+  const patterns = [
+    /```[\s\S]*?```/m,
+    /<\/?(html|head|body|script|style|div|span|pre|code)[\s>]/i,
+    /<\?php/i,
+    /\b(import|export)\b\s+/i,
+    /\b(function|class)\b\s+[a-z0-9_]+\s*\(/i,
+    /\bconst\b\s+[a-z0-9_]+\s*=/i,
+    /\blet\b\s+[a-z0-9_]+\s*=/i,
+    /\bvar\b\s+[a-z0-9_]+\s*=/i,
+    /\breturn\b\s+/i,
+    /\bconsole\.log\b/i,
+    /\bSELECT\b\s+.*\bFROM\b/i,
+    /^\s*\{\s*"[^"]+"\s*:/m, // JSON object
+    /^\s*\[\s*\{\s*"[^"]+"\s*:/m, // JSON array of objects
+    /^\s*<\?xml\b/i,
+  ];
+
+  if (patterns.some((re) => re.test(s))) return true;
+
+  // If it still contains lots of typical markdown/formatting artifacts
+  if (/(^|\n)\s*#{1,6}\s+/.test(s)) return true;
+  if (/(^|\n)\s*[-•]\s+/.test(s)) return true;
+
+  // If it's extremely short, it's usually not a real analysis
+  const stripped = s.replace(/\s+/g, " ").trim();
+  if (stripped.length < 120) return true;
+
+  // If it contains too many braces/semicolons relative to length
+  const braceCount = (s.match(/[{}]/g) || []).length;
+  const semiCount = (s.match(/;/g) || []).length;
+  if (braceCount + semiCount >= 14) return true;
+
+  // If it looks like an error message or system-like output
+  if (lower.includes("openrouter") && lower.includes("error")) return true;
+  if (lower.includes("missing") && lower.includes("key")) return true;
+
+  return false;
+}
+
+function isValidAnalysisText(raw) {
+  if (!raw) return false;
+  const s = String(raw).trim();
+  if (!s) return false;
+  if (looksLikeCodeOrMarkup(s)) return false;
+
+  // Must contain at least a couple of structured sections cues
+  const hasNumbered = /(^|\n)\s*\d\)\s+/.test(s);
+  const hasScenarii = /scenari/i.test(s);
+  const hasRecomand = /recomand/i.test(s) || /selec/i.test(s);
+  return hasNumbered && (hasScenarii || hasRecomand);
+}
+
 export async function POST(req) {
   if (INTERNAL_KEY) {
     const auth = req.headers.get("authorization") || "";
@@ -72,109 +129,162 @@ export async function POST(req) {
     );
   }
 
-  const prompt = `Acționează ca un Senior Risk Manager și Analist Sportiv de elită. Generează o analiză tehnică, ultra-concisă și orientată strict pe profitabilitate și risc pentru meciul specificat.
+  const promptBase = `Acționează ca un Senior Risk Manager și Analist Sportiv de elită. Generează o analiză tehnică, ultra-concisă și orientată strict pe profitabilitate și risc pentru meciul specificat.
 
-  INSTRUCȚIUNI DE FORMAT (CRITIC):
-  - Output: DOAR text simplu (plain text).
-  - STRICT INTERZIS: Markdown, bold, italic, simboluri (#, *, _), liste cu bullet-uri (folosește "1)", "2)" etc).
-  - STIL: Profesional, chirurgical, fără cuvinte de umplutură. Densitate mare de informație în puține cuvinte.
-  - NU inventa statistici. Dacă lipsesc datele, bazează-te pe arhetipul echipelor și dinamica ligii.
-  
-  DATE INTRARE:
-  Meci: ${echipe}
-  Liga: ${liga}
-  Status: ${status} (Interpretează: LIVE, PRE-MATCH sau FINAL în funcție de cod).
-  
-  STRUCTURA ANALIZEI:
-  
-  1. CONTEXT ȘI MIZE:
-  Maximum 2 fraze. Ce tip de meci este (derby, luptă la retrogradare, relaxare)? Cum influențează motivația?
-  
-  2. DINAMICA TACTICĂ (Esentia analizei):
-  Explică scurt "match-up-ul":
-  - Dacă e LIVE: Ce spune scorul/timpul despre urgența tactică? Cine forțează, cine se apără supraaglomerat?
-  - Dacă e PRE-MATCH: Stil vs Stil (ex: Posesie vs Contraatac). Unde e dezechilibrul?
-  - Dacă e FINAL: Ce factor a decis meciul (eroare, dominare, tactic)?
-  
-  3. PUNCTE CRITICE DE INTERES:
-  Enumeră numerotat 1), 2), 3) cei mai importanți factori care pot "rupe" meciul (ex: oboseală minutul 70, vulnerabilitate pe flancuri, istoric de cartonașe, presiunea publicului).
-  
-  4. SCENARII PROBABILE:
-  Scurt și la obiect.
-  A) Scenariu Principal: Ce este cel mai logic să se întâmple.
-  B) Scenariu de Risc: Ce ar putea da totul peste cap.
-  
-  5. RECOMANDARE (UNGHIURI DE PARIERE):
-  Oferă 2 direcții clare, bazate pe valoare, nu pe siguranță oarbă.
-  Format:
-  1) Selecție principală: [Tip pariu] - [Motiv în 5 cuvinte]
-  2) Selecție alternativă/Live: [Tip pariu] - [Condiție necesară]
-  
-  NIVEL DE RISC: Scăzut / Mediu / Ridicat (Argumentează într-o propoziție).
-  `;
+INSTRUCȚIUNI DE FORMAT (CRITIC):
+- Output: DOAR text simplu (plain text).
+- STRICT INTERZIS: Markdown, bold, italic, simboluri (#, *, _, \`), liste cu bullet-uri (folosește "1)", "2)" etc).
+- STRICT INTERZIS: orice cod, JSON, HTML, tag-uri, backticks, sau blocuri de tip \`\`\`.
+- NU include: "{" , "}" , "<" , ">" , "import" , "export" , "function" , "class" , "<?php".
+- STIL: Profesional, chirurgical, fără cuvinte de umplutură. Densitate mare de informație în puține cuvinte.
+- NU inventa statistici. Dacă lipsesc datele, bazează-te pe arhetipul echipelor și dinamica ligii.
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 20000);
+DATE INTRARE:
+Meci: ${echipe}
+Liga: ${liga}
+Status: ${status} (Interpretează: LIVE sau PRE-MATCH în funcție de cod; dacă e FINAL, rezumă factorul decisiv și ce înseamnă pentru următorul meci).
+
+REGULI LIVE vs PRE-MATCH:
+- Dacă e LIVE: fă analiză pe trecut (formă recentă), prezent (dinamica scor/timp, cine forțează, cine gestionează), viitor (ce e mai probabil să se întâmple până la final + trigger-e).
+- Dacă NU a început: fă analiză pe trecut (formă/stil), prezent (match-up tactic), viitor (scenarii probabile pentru primele 30 min și final).
+
+STRUCTURA ANALIZEI (folosește exact aceste secțiuni numerotate):
+
+1) CONTEXT ȘI MIZE:
+Maxim 2 fraze.
+
+2) DINAMICA TACTICĂ:
+Maxim 4 fraze.
+
+3) PUNCTE CRITICE DE INTERES:
+1) ...
+2) ...
+3) ...
+
+4) SCENARII PROBABILE:
+A) Scenariu principal: ...
+B) Scenariu de risc: ...
+
+5) RECOMANDĂRI (UNGHURI DE PARIERE):
+1) Selecție principală: [Tip pariu] - [Motiv în 5-8 cuvinte]
+2) Selecție alternativă/Live: [Tip pariu] - [Condiție necesară]
+
+NIVEL DE RISC: Scăzut / Mediu / Ridicat (1 propoziție cu motiv).
+`;
+
+  async function callOpenRouter(userPrompt, attempt) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
+
+    try {
+      const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": process.env.HTTP_REFERER || "https://betlogic.ro",
+          "X-Title": process.env.APP_TITLE || "BetLogic",
+        },
+        body: JSON.stringify({
+          model: "mistralai/mistral-7b-instruct",
+          messages: [{ role: "user", content: userPrompt }],
+          temperature: attempt === 1 ? 0.6 : 0.2,
+          max_tokens: 700,
+        }),
+        signal: controller.signal,
+      });
+
+      const contentType = r.headers.get("content-type") || "";
+      const isJson = contentType.includes("application/json");
+
+      let data;
+      if (isJson) {
+        data = await r.json();
+      } else {
+        const text = await r.text();
+        clearTimeout(timeoutId);
+        return {
+          ok: false,
+          status: 502,
+          error: "Non-JSON response from OpenRouter",
+          raw: text,
+        };
+      }
+
+      clearTimeout(timeoutId);
+
+      if (!r.ok) {
+        return {
+          ok: false,
+          status: r.status,
+          error: data?.error?.message || "OpenRouter request failed",
+          raw: data,
+        };
+      }
+
+      const rawText = data?.choices?.[0]?.message?.content || "";
+      return { ok: true, status: 200, rawText };
+    } catch (err) {
+      clearTimeout(timeoutId);
+      return {
+        ok: false,
+        status: 502,
+        error: "OpenRouter fetch failed",
+        raw: String(err?.message || err),
+      };
+    }
+  }
 
   try {
-    const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": process.env.HTTP_REFERER || "https://betlogic.ro",
-        "X-Title": process.env.APP_TITLE || "BetLogic",
-      },
-      body: JSON.stringify({
-        model: "mistralai/mistral-7b-instruct",
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.7,
-        max_tokens: 700,
-      }),
-      signal: controller.signal,
-    });
+    // Attempt 1: normal prompt
+    let prompt = promptBase;
+    let resp1 = await callOpenRouter(prompt, 1);
 
-    clearTimeout(timeoutId);
-
-    const contentType = r.headers.get("content-type") || "";
-    if (!contentType.includes("application/json")) {
-      const text = await r.text();
+    if (!resp1.ok) {
+      console.error("❌ OpenRouter error:", resp1);
       return withCors(
         NextResponse.json(
-          { error: "Non-JSON response from OpenRouter", raw: text },
-          { status: 502 }
+          { error: resp1.error, raw: resp1.raw },
+          { status: resp1.status || 502 }
         )
       );
     }
 
-    const data = await r.json();
+    let analysis = cleanPlainText(resp1.rawText);
 
-    if (!r.ok) {
-      console.error("❌ OpenRouter error:", data);
-      return withCors(
-        NextResponse.json(
-          {
-            error: data?.error?.message || "OpenRouter request failed",
-            raw: data,
-          },
-          { status: r.status }
-        )
-      );
+    // Safety net: if the model returned code/markup/garbage, retry once with stricter instructions
+    if (!isValidAnalysisText(analysis)) {
+      const strictAddon = `\n\nIMPORTANT: Ai returnat un output invalid anterior. Acum respectă STRICT:\n- DOAR text simplu cu secțiuni 1) ... 5)\n- Fără cod/JSON/HTML/Markdown\n- Fără caractere { } < > sau backticks\n- Dacă nu poți respecta, răspunde exact: ANALIZA_INDISPONIBILA`;
+
+      const resp2 = await callOpenRouter(promptBase + strictAddon, 2);
+
+      if (!resp2.ok) {
+        console.error("❌ OpenRouter error (retry):", resp2);
+        return withCors(
+          NextResponse.json(
+            { error: resp2.error, raw: resp2.raw },
+            { status: resp2.status || 502 }
+          )
+        );
+      }
+
+      analysis = cleanPlainText(resp2.rawText);
+
+      if (
+        !isValidAnalysisText(analysis) ||
+        /^ANALIZA_INDISPONIBILA\s*$/i.test(analysis)
+      ) {
+        return withCors(
+          NextResponse.json(
+            {
+              error: "Nu am putut genera o analiză validă. Încearcă din nou.",
+              reason: "invalid_output",
+            },
+            { status: 502 }
+          )
+        );
+      }
     }
-
-    let analysis = data?.choices?.[0]?.message?.content;
-
-    if (!analysis) {
-      console.error("⚠️ No AI content:", data);
-      return withCors(
-        NextResponse.json(
-          { error: "No AI content returned", raw: data },
-          { status: 500 }
-        )
-      );
-    }
-
-    analysis = cleanPlainText(analysis);
 
     return withCors(NextResponse.json({ analysis }));
   } catch (err) {
