@@ -280,7 +280,9 @@ export async function POST(req) {
     return withCors(res);
   }
 
-  const promptBase = `Acționează ca un Senior Risk Manager și Analist Sportiv de elită. Generează o analiză tehnică, ultra-concisă și orientată strict pe profitabilitate și risc pentru meciul specificat.
+  const promptBase = `
+Acționează ca un Analist Sportiv Senior și Specialist în Evaluarea Riscului Competitiv. 
+Generează o analiză tehnică, concisă și informativă pentru meciul specificat, bazată pe date, context sportiv și scenarii posibile.
 
 INSTRUCȚIUNI DE LIMBĂ ȘI STATUS (OBLIGATORIU):
 - LIMBĂ: Scrie în limba română perfectă, naturală și cursivă.
@@ -290,39 +292,41 @@ INSTRUCȚIUNI DE FORMAT (CRITIC):
 - Output: DOAR text simplu (plain text).
 - STRICT INTERZIS: Markdown, bold, italic, simboluri (#, *, _, \`), liste cu bullet-uri.
 - STRUCTURĂ: Folosește exact numerotarea 1), 2), 3) etc.
-- STIL: Chirurgical, dens, fără umplutură.
+- STIL: Analitic, neutru, precis, fără limbaj promoțional sau promisiuni.
 
-DATE INTRARE:
+DATE DE INTRARE:
 Meci: ${echipe}
 Liga: ${liga}
 Status curent: ${status}
 
 OBIECTIVUL ANALIZEI:
-Oferă informația pe care casele de pariuri ar prefera să o ignore jucătorii. Concentrează-te pe valoare (value betting) și riscuri ascunse.
+Oferă o evaluare obiectivă a contextului sportiv și a dinamicii meciului, evidențiind factori relevanți și riscuri competitive.
+Analiza are scop STRICT INFORMATIV și nu reprezintă o recomandare de pariere.
 
 STRUCTURA ANALIZEI:
 
 1) CONTEXT ȘI MIZE:
-Maxim 2 fraze. Menționează clar stadiul meciului (tradus în română) și motivația reală a echipelor (luptă la titlu, evitare retrogradare, meci amical deghizat etc.).
+Maxim 2 fraze. Menționează clar stadiul meciului (tradus în română) și contextul competițional al echipelor (obiective, presiune, importanța meciului).
 
 2) DINAMICA TACTICĂ:
-Maxim 3-4 fraze. Descrie "match-up-ul": cum se lovește atacul unei echipe de apărarea celeilalte? (Ex: "Echipa gazdă domină posesia steril, oaspeții sunt letali pe contraatac").
+Maxim 3-4 fraze. Descrie interacțiunea stilurilor de joc și zonele-cheie unde se poate decide meciul.
 
-3) PUNCTE CRITICE DE INTERES (RESEARCH AVANSAT):
-Aici trebuie să oferi "aurul" pentru pariori. Include 3 puncte numerotate distinct:
-1) Situația lotului & Impact: Nu enumera doar accidentații, ci explică impactul (ex: "Lipsește golgheterul X, deci forța ofensivă scade cu 40%").
-2) Statistici de nișă: Caută tendințe specifice (ex: cornere, cartonașe, goluri marcate târziu, eficiență acasă vs deplasare).
-3) Factori X: Elemente externe care pot decide meciul (ex: arbitru care dă ușor cartonașe, starea gazonului, oboseală după cupă europeană, conflicte interne).
+3) FACTORI CRITICI DE ANALIZĂ:
+Include exact 3 puncte numerotate distinct:
+1) Situația lotului și impactul sportiv: explică influența absențelor sau revenirilor asupra jocului.
+2) Tendințe statistice relevante: evidențiază pattern-uri observabile (ritm, eficiență, momente-cheie).
+3) Factori externi sau contextuali: elemente care pot influența desfășurarea meciului.
 
-4) SCENARII PROBABILE:
-A) Scenariu principal: Ce este logic să se întâmple (ex: victorie scurtă, meci închis).
-B) Scenariu de risc: Ce poate răsturna calculul hârtiei.
+4) SCENARII POSIBILE:
+A) Scenariu principal: evoluția logică a meciului pe baza datelor disponibile.
+B) Scenariu alternativ: condiții sau evenimente care pot modifica cursul estimat.
 
-5) RECOMANDĂRI (UNGHIURI DE PARIERE):
-1) Selecție principală: [Tip pariu] - [Argument scurt bazat pe statistică/tactică]
-2) Selecție alternativă/Live: [Tip pariu] - [Condiția necesară (ex: dacă nu se marchează în primele 20 min)]
+5) INTERPRETARE ȘI NIVEL DE INCERTITUDINE:
+Evaluează nivelul general de incertitudine al meciului (Scăzut / Mediu / Ridicat) și explică într-o singură propoziție de ce rezultatul poate fi previzibil sau volatil.
 
-NIVEL DE RISC: Scăzut / Mediu / Ridicat (Argumentează într-o singură propoziție).
+NOTĂ FINALĂ (OBLIGATORIU):
+Analiza este generată automat pe baza datelor disponibile și are scop exclusiv informativ. 
+Nu garantează niciun rezultat și nu constituie o recomandare de pariere.
 `;
 
   try {
