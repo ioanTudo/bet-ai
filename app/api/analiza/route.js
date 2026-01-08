@@ -115,6 +115,24 @@ function isValidAnalysisText(raw) {
   return hasNumbered && (hasScenarii || hasRecomand);
 }
 
+function endsWithSentencePunctuation(text) {
+  const s = String(text || "").trim();
+  if (!s) return false;
+  return /[.!?…]$/.test(s);
+}
+
+function hasAllMainSections(text) {
+  const s = String(text || "");
+  // We expect sections 1) through 5)
+  return (
+    /(^|\n)\s*1\)\s+/.test(s) &&
+    /(^|\n)\s*2\)\s+/.test(s) &&
+    /(^|\n)\s*3\)\s+/.test(s) &&
+    /(^|\n)\s*4\)\s+/.test(s) &&
+    /(^|\n)\s*5\)\s+/.test(s)
+  );
+}
+
 async function callOpenRouter(userPrompt, attempt) {
   // We keep this relatively short for performance. If OpenRouter is slow/unavailable,
   // we retry once (or twice) with backoff and a lower temperature.
@@ -146,11 +164,12 @@ async function callOpenRouter(userPrompt, attempt) {
           "X-Title": process.env.APP_TITLE || "BetLogic",
         },
         body: JSON.stringify({
-          model:
-            process.env.OPENROUTER_MODEL || "mistralai/mistral-7b-instruct",
+          model: process.env.OPENROUTER_MODEL || "openai/gpt-4o",
           messages: [{ role: "user", content: userPrompt }],
-          temperature: i === 1 ? 0.5 : 0.2,
-          max_tokens: 650,
+          temperature: Number(
+            process.env.OPENROUTER_TEMPERATURE || (i === 1 ? 0.25 : 0.15)
+          ),
+          max_tokens: Number(process.env.OPENROUTER_MAX_TOKENS || 1200),
         }),
         signal: controller.signal,
       });
@@ -378,6 +397,57 @@ Nu garantează niciun rezultat și nu constituie o recomandare de pariere.
           )
         );
       }
+    }
+
+    // If the output looks cut off (common with some models / low token limits), try one continuation.
+    if (
+      !endsWithSentencePunctuation(analysis) ||
+      !hasAllMainSections(analysis)
+    ) {
+      const continuePrompt = `${promptBase}\n\nIMPORTANT: Textul de mai jos pare întrerupt sau incomplet. Continuă EXACT de unde ai rămas și finalizează analiza completă, respectând aceeași structură 1) ... 5) și nota finală.\n\nTEXT EXISTENT:\n${analysis}`;
+
+      const resp3 = await callOpenRouter(continuePrompt, 2);
+      if (resp3.ok) {
+        const cont = cleanPlainText(resp3.rawText);
+        // Append only if it looks valid and adds value
+        if (isValidAnalysisText(cont)) {
+          // Avoid duplicating sections by trimming possible repeated prefix
+          const contTrimmed = cont.replace(
+            /^\s*1\)\s+[\s\S]*?(?=(\n\s*4\)|\n\s*5\)|$))/m,
+            (m) => m
+          );
+          const merged = `${analysis}\n\n${contTrimmed}`.trim();
+          // Keep the merged output only if it now looks complete
+          if (
+            hasAllMainSections(merged) &&
+            endsWithSentencePunctuation(merged)
+          ) {
+            analysis = merged;
+          } else if (
+            hasAllMainSections(cont) &&
+            endsWithSentencePunctuation(cont)
+          ) {
+            // If the continuation alone is better/complete, prefer it
+            analysis = cont;
+          }
+        }
+      }
+    }
+
+    if (
+      !hasAllMainSections(analysis) ||
+      !endsWithSentencePunctuation(analysis)
+    ) {
+      return withCors(
+        NextResponse.json(
+          {
+            error:
+              "Analiza a fost întreruptă înainte de final. Încearcă din nou.",
+            reason: "truncated_output",
+          },
+          { status: 502 }
+        )
+      );
     }
 
     cacheSet(cacheKey, analysis);
