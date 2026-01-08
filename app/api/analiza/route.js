@@ -133,11 +133,10 @@ function hasAllMainSections(text) {
   );
 }
 
-async function callOpenRouter(userPrompt, attempt) {
-  // We keep this relatively short for performance. If OpenRouter is slow/unavailable,
-  // we retry once (or twice) with backoff and a lower temperature.
+async function callOpenAI(userPrompt, attempt) {
+  // Direct OpenAI call (Chat Completions). Retries on transient errors/timeouts.
   const maxAttempts = 3;
-  const baseTimeoutMs = 22000; // avoid premature aborts (often the #1 source of 502)
+  const baseTimeoutMs = 22000;
 
   const isRetryableStatus = (status) =>
     status === 408 ||
@@ -149,27 +148,28 @@ async function callOpenRouter(userPrompt, attempt) {
     status === 503 ||
     status === 504;
 
+  const apiKey = process.env.OPENAI_API_KEY;
+  const model = process.env.OPENAI_MODEL || "gpt-4";
+
   for (let i = attempt; i <= maxAttempts; i++) {
     const controller = new AbortController();
-    const timeoutMs = baseTimeoutMs + (i - 1) * 4000; // progressive timeout
+    const timeoutMs = baseTimeoutMs + (i - 1) * 4000;
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      const r = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
-          "HTTP-Referer": process.env.HTTP_REFERER || "https://betlogic.ro",
-          "X-Title": process.env.APP_TITLE || "BetLogic",
         },
         body: JSON.stringify({
-          model: process.env.OPENROUTER_MODEL || "openai/gpt-4o",
+          model,
           messages: [{ role: "user", content: userPrompt }],
           temperature: Number(
-            process.env.OPENROUTER_TEMPERATURE || (i === 1 ? 0.25 : 0.15)
+            process.env.OPENAI_TEMPERATURE || (i === 1 ? 0.25 : 0.15)
           ),
-          max_tokens: Number(process.env.OPENROUTER_MAX_TOKENS || 1200),
+          max_tokens: Number(process.env.OPENAI_MAX_OUTPUT_TOKENS || 1200),
         }),
         signal: controller.signal,
       });
@@ -177,7 +177,6 @@ async function callOpenRouter(userPrompt, attempt) {
       const contentType = r.headers.get("content-type") || "";
       const isJson = contentType.includes("application/json");
 
-      // If OpenRouter/CDN returns HTML (common on 502/504), treat as retryable.
       if (!isJson) {
         const text = await r.text();
         clearTimeout(timeoutId);
@@ -186,11 +185,11 @@ async function callOpenRouter(userPrompt, attempt) {
         const errObj = {
           ok: false,
           status: isRetryableStatus(status) ? status : 502,
-          error: "Non-JSON response from OpenRouter",
+          error: "Non-JSON response from OpenAI",
           raw: text?.slice?.(0, 8000) || text,
         };
 
-        if (i < maxAttempts) {
+        if (i < maxAttempts && isRetryableStatus(status)) {
           await new Promise((res) => setTimeout(res, 300 * i));
           continue;
         }
@@ -206,11 +205,10 @@ async function callOpenRouter(userPrompt, attempt) {
         const errObj = {
           ok: false,
           status,
-          error: data?.error?.message || "OpenRouter request failed",
+          error: data?.error?.message || "OpenAI request failed",
           raw: data,
         };
 
-        // Retry on transient statuses
         if (i < maxAttempts && isRetryableStatus(status)) {
           await new Promise((res) => setTimeout(res, 350 * i));
           continue;
@@ -232,7 +230,7 @@ async function callOpenRouter(userPrompt, attempt) {
       const errObj = {
         ok: false,
         status: aborted ? 504 : 502,
-        error: aborted ? "OpenRouter timeout" : "OpenRouter fetch failed",
+        error: aborted ? "OpenAI timeout" : "OpenAI fetch failed",
         raw: msg,
       };
 
@@ -248,7 +246,7 @@ async function callOpenRouter(userPrompt, attempt) {
   return {
     ok: false,
     status: 502,
-    error: "OpenRouter request failed",
+    error: "OpenAI request failed",
     raw: "unknown",
   };
 }
@@ -262,12 +260,9 @@ export async function POST(req) {
       );
     }
   }
-  if (!process.env.OPENROUTER_API_KEY) {
+  if (!process.env.OPENAI_API_KEY) {
     return withCors(
-      NextResponse.json(
-        { error: "Missing OpenRouter API key" },
-        { status: 500 }
-      )
+      NextResponse.json({ error: "Missing OpenAI API key" }, { status: 500 })
     );
   }
 
@@ -351,10 +346,10 @@ Nu garantează niciun rezultat și nu constituie o recomandare de pariere.
   try {
     // Attempt 1: normal prompt
     let prompt = promptBase;
-    let resp1 = await callOpenRouter(prompt, 1);
+    let resp1 = await callOpenAI(prompt, 1);
 
     if (!resp1.ok) {
-      console.error("❌ OpenRouter error:", resp1);
+      console.error("❌ OpenAI error:", resp1);
       return withCors(
         NextResponse.json(
           { error: resp1.error },
@@ -369,10 +364,10 @@ Nu garantează niciun rezultat și nu constituie o recomandare de pariere.
     if (!isValidAnalysisText(analysis)) {
       const strictAddon = `\n\nIMPORTANT: Ai returnat un output invalid anterior. Acum respectă STRICT:\n- DOAR text simplu cu secțiuni 1) ... 5)\n- Fără cod/JSON/HTML/Markdown\n- Fără caractere { } < > sau backticks\n- Dacă nu poți respecta, răspunde exact: ANALIZA_INDISPONIBILA`;
 
-      const resp2 = await callOpenRouter(promptBase + strictAddon, 2);
+      const resp2 = await callOpenAI(promptBase + strictAddon, 2);
 
       if (!resp2.ok) {
-        console.error("❌ OpenRouter error (retry):", resp2);
+        console.error("❌ OpenAI error (retry):", resp2);
         return withCors(
           NextResponse.json(
             { error: resp2.error },
@@ -406,7 +401,7 @@ Nu garantează niciun rezultat și nu constituie o recomandare de pariere.
     ) {
       const continuePrompt = `${promptBase}\n\nIMPORTANT: Textul de mai jos pare întrerupt sau incomplet. Continuă EXACT de unde ai rămas și finalizează analiza completă, respectând aceeași structură 1) ... 5) și nota finală.\n\nTEXT EXISTENT:\n${analysis}`;
 
-      const resp3 = await callOpenRouter(continuePrompt, 2);
+      const resp3 = await callOpenAI(continuePrompt, 2);
       if (resp3.ok) {
         const cont = cleanPlainText(resp3.rawText);
         // Append only if it looks valid and adds value
