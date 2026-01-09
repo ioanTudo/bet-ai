@@ -359,7 +359,7 @@ Evaluează nivelul general de incertitudine al meciului (Scăzut / Mediu / Ridic
 
 NOTĂ FINALĂ (OBLIGATORIU):
 Analiza este generată automat pe baza datelor disponibile și are scop exclusiv informativ. 
-Nu garantează niciun rezultat și nu constituie o recomandare de pariere.
+
 `;
 
   try {
