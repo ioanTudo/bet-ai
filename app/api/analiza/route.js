@@ -34,6 +34,12 @@ function withCors(res) {
   return res;
 }
 
+function okJson(payload) {
+  const res = NextResponse.json(payload, { status: 200 });
+  res.headers.set("Cache-Control", "no-store");
+  return withCors(res);
+}
+
 function cleanPlainText(input) {
   if (!input) return "";
   let s = String(input);
@@ -108,11 +114,26 @@ function isValidAnalysisText(raw) {
   if (!s) return false;
   if (looksLikeCodeOrMarkup(s)) return false;
 
-  // Must contain at least a couple of structured sections cues
-  const hasNumbered = /(^|\n)\s*\d\)\s+/.test(s);
-  const hasScenarii = /scenari/i.test(s);
-  const hasRecomand = /recomand/i.test(s) || /selec/i.test(s);
-  return hasNumbered && (hasScenarii || hasRecomand);
+  // Accept either 1) or 1. for headings (models sometimes vary)
+  const hasNumbered1 = /(^|\n)\s*1[\)\.]\s+/.test(s);
+  const hasNumbered2 = /(^|\n)\s*2[\)\.]\s+/.test(s);
+  const hasNumbered3 = /(^|\n)\s*3[\)\.]\s+/.test(s);
+  const hasNumbered4 = /(^|\n)\s*4[\)\.]\s+/.test(s);
+  const hasNumbered5 = /(^|\n)\s*5[\)\.]\s+/.test(s);
+
+  // Must include the main sections, but be tolerant about wording
+  const hasMain =
+    hasNumbered1 &&
+    hasNumbered2 &&
+    hasNumbered3 &&
+    hasNumbered4 &&
+    hasNumbered5;
+
+  // We still prefer seeing scenario/uncertainty cues somewhere
+  const hasScenarioCue = /scenari/i.test(s) || /alternativ/i.test(s);
+  const hasUncertaintyCue = /incertitud/i.test(s) || /risc/i.test(s);
+
+  return hasMain && (hasScenarioCue || hasUncertaintyCue);
 }
 
 function endsWithSentencePunctuation(text) {
@@ -123,20 +144,20 @@ function endsWithSentencePunctuation(text) {
 
 function hasAllMainSections(text) {
   const s = String(text || "");
-  // We expect sections 1) through 5)
+  // Accept either 1) or 1. for headings
   return (
-    /(^|\n)\s*1\)\s+/.test(s) &&
-    /(^|\n)\s*2\)\s+/.test(s) &&
-    /(^|\n)\s*3\)\s+/.test(s) &&
-    /(^|\n)\s*4\)\s+/.test(s) &&
-    /(^|\n)\s*5\)\s+/.test(s)
+    /(^|\n)\s*1[\)\.]\s+/.test(s) &&
+    /(^|\n)\s*2[\)\.]\s+/.test(s) &&
+    /(^|\n)\s*3[\)\.]\s+/.test(s) &&
+    /(^|\n)\s*4[\)\.]\s+/.test(s) &&
+    /(^|\n)\s*5[\)\.]\s+/.test(s)
   );
 }
 
 async function callOpenAI(userPrompt, attempt) {
   // Direct OpenAI call (Chat Completions). Retries on transient errors/timeouts.
   const maxAttempts = 3;
-  const baseTimeoutMs = 22000;
+  const baseTimeoutMs = Number(process.env.OPENAI_TIMEOUT_MS || 35000);
 
   const isRetryableStatus = (status) =>
     status === 408 ||
@@ -169,7 +190,7 @@ async function callOpenAI(userPrompt, attempt) {
           temperature: Number(
             process.env.OPENAI_TEMPERATURE || (i === 1 ? 0.25 : 0.15)
           ),
-          max_tokens: Number(process.env.OPENAI_MAX_OUTPUT_TOKENS || 1200),
+          max_tokens: Number(process.env.OPENAI_MAX_OUTPUT_TOKENS || 1600),
         }),
         signal: controller.signal,
       });
@@ -206,7 +227,7 @@ async function callOpenAI(userPrompt, attempt) {
           ok: false,
           status,
           error: data?.error?.message || "OpenAI request failed",
-          raw: data,
+          raw: { model, attempt: i, data },
         };
 
         if (i < maxAttempts && isRetryableStatus(status)) {
@@ -255,32 +276,27 @@ export async function POST(req) {
   if (INTERNAL_KEY) {
     const auth = req.headers.get("authorization") || "";
     if (auth !== `Bearer ${INTERNAL_KEY}`) {
-      return withCors(
-        NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-      );
+      return okJson({ error: "Unauthorized", reason: "unauthorized" });
     }
   }
   if (!process.env.OPENAI_API_KEY) {
-    return withCors(
-      NextResponse.json({ error: "Missing OpenAI API key" }, { status: 500 })
-    );
+    return okJson({
+      error: "Missing OpenAI API key",
+      reason: "missing_api_key",
+    });
   }
 
   let body;
   try {
     body = await req.json();
   } catch {
-    return withCors(
-      NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
-    );
+    return okJson({ error: "Invalid JSON body", reason: "invalid_json" });
   }
 
   const { echipe, liga, status } = body;
 
   if (!echipe || !liga) {
-    return withCors(
-      NextResponse.json({ error: "Date incomplete" }, { status: 400 })
-    );
+    return okJson({ error: "Date incomplete", reason: "missing_fields" });
   }
 
   // Best-effort cache to avoid repeated calls (improves speed + reduces 502s)
@@ -289,7 +305,10 @@ export async function POST(req) {
   ).trim()}`;
   const cached = cacheGet(cacheKey);
   if (cached) {
-    const res = NextResponse.json({ analysis: cached });
+    const res = NextResponse.json(
+      { ok: true, analysis: cached },
+      { status: 200 }
+    );
     res.headers.set("Cache-Control", "public, max-age=60");
     return withCors(res);
   }
@@ -350,12 +369,12 @@ Nu garantează niciun rezultat și nu constituie o recomandare de pariere.
 
     if (!resp1.ok) {
       console.error("❌ OpenAI error:", resp1);
-      return withCors(
-        NextResponse.json(
-          { error: resp1.error },
-          { status: resp1.status || 502 }
-        )
-      );
+      return okJson({
+        error: "AI indisponibil momentan. Încearcă din nou.",
+        reason: "openai_error",
+        upstream_status: resp1.status || 502,
+        upstream_error: resp1.error,
+      });
     }
 
     let analysis = cleanPlainText(resp1.rawText);
@@ -368,12 +387,12 @@ Nu garantează niciun rezultat și nu constituie o recomandare de pariere.
 
       if (!resp2.ok) {
         console.error("❌ OpenAI error (retry):", resp2);
-        return withCors(
-          NextResponse.json(
-            { error: resp2.error },
-            { status: resp2.status || 502 }
-          )
-        );
+        return okJson({
+          error: "AI indisponibil momentan. Încearcă din nou.",
+          reason: "openai_error_retry",
+          upstream_status: resp2.status || 502,
+          upstream_error: resp2.error,
+        });
       }
 
       analysis = cleanPlainText(resp2.rawText);
@@ -382,15 +401,20 @@ Nu garantează niciun rezultat și nu constituie o recomandare de pariere.
         !isValidAnalysisText(analysis) ||
         /^ANALIZA_INDISPONIBILA\s*$/i.test(analysis)
       ) {
-        return withCors(
-          NextResponse.json(
-            {
-              error: "Nu am putut genera o analiză validă. Încearcă din nou.",
-              reason: "invalid_output",
-            },
-            { status: 502 }
-          )
-        );
+        return okJson({
+          error: "Nu am putut genera o analiză validă. Încearcă din nou.",
+          reason: "invalid_output",
+          ...(process.env.BETLOGIC_DEBUG === "1"
+            ? {
+                debug: {
+                  tip: "Model output failed validation",
+                  echipe,
+                  liga,
+                  status,
+                },
+              }
+            : {}),
+        });
       }
     }
 
@@ -433,27 +457,29 @@ Nu garantează niciun rezultat și nu constituie o recomandare de pariere.
       !hasAllMainSections(analysis) ||
       !endsWithSentencePunctuation(analysis)
     ) {
-      return withCors(
-        NextResponse.json(
-          {
-            error:
-              "Analiza a fost întreruptă înainte de final. Încearcă din nou.",
-            reason: "truncated_output",
-          },
-          { status: 502 }
-        )
-      );
+      return okJson({
+        error: "Analiza a fost întreruptă înainte de final. Încearcă din nou.",
+        reason: "truncated_output",
+        ...(process.env.BETLOGIC_DEBUG === "1"
+          ? {
+              debug: {
+                tip: "Model output looked truncated",
+                echipe,
+                liga,
+                status,
+              },
+            }
+          : {}),
+      });
     }
 
     cacheSet(cacheKey, analysis);
-    const res = NextResponse.json({ analysis });
+    const res = NextResponse.json({ ok: true, analysis }, { status: 200 });
     res.headers.set("Cache-Control", "public, max-age=60");
     return withCors(res);
   } catch (err) {
     console.error("🔥 Server error:", err);
-    return withCors(
-      NextResponse.json({ error: "Server error" }, { status: 500 })
-    );
+    return okJson({ error: "Server error", reason: "server_error" });
   }
 }
 
