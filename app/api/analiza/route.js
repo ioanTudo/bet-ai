@@ -40,6 +40,12 @@ function okJson(payload) {
   return withCors(res);
 }
 
+function errorJson(payload, status = 502) {
+  const res = NextResponse.json(payload, { status });
+  res.headers.set("Cache-Control", "no-store");
+  return withCors(res);
+}
+
 function cleanPlainText(input) {
   if (!input) return "";
   let s = String(input);
@@ -170,7 +176,15 @@ async function callOpenAI(userPrompt, attempt) {
     status === 504;
 
   const apiKey = process.env.OPENAI_API_KEY;
-  const model = process.env.OPENAI_MODEL || "gpt-4";
+  if (!apiKey) {
+    return {
+      ok: false,
+      status: 500,
+      error: "Missing OpenAI API key",
+      raw: "OPENAI_API_KEY is not set",
+    };
+  }
+  const model = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 
   for (let i = attempt; i <= maxAttempts; i++) {
     const controller = new AbortController();
@@ -369,12 +383,15 @@ Analiza este generată automat pe baza datelor disponibile și are scop exclusiv
 
     if (!resp1.ok) {
       console.error("❌ OpenAI error:", resp1);
-      return okJson({
-        error: "AI indisponibil momentan. Încearcă din nou.",
-        reason: "openai_error",
-        upstream_status: resp1.status || 502,
-        upstream_error: resp1.error,
-      });
+      return errorJson(
+        {
+          error: "AI indisponibil momentan. Încearcă din nou.",
+          reason: "openai_error",
+          upstream_status: resp1.status || 502,
+          upstream_error: resp1.error,
+        },
+        resp1.status || 502
+      );
     }
 
     let analysis = cleanPlainText(resp1.rawText);
@@ -387,12 +404,15 @@ Analiza este generată automat pe baza datelor disponibile și are scop exclusiv
 
       if (!resp2.ok) {
         console.error("❌ OpenAI error (retry):", resp2);
-        return okJson({
-          error: "AI indisponibil momentan. Încearcă din nou.",
-          reason: "openai_error_retry",
-          upstream_status: resp2.status || 502,
-          upstream_error: resp2.error,
-        });
+        return errorJson(
+          {
+            error: "AI indisponibil momentan. Încearcă din nou.",
+            reason: "openai_error_retry",
+            upstream_status: resp2.status || 502,
+            upstream_error: resp2.error,
+          },
+          resp2.status || 502
+        );
       }
 
       analysis = cleanPlainText(resp2.rawText);
@@ -479,7 +499,7 @@ Analiza este generată automat pe baza datelor disponibile și are scop exclusiv
     return withCors(res);
   } catch (err) {
     console.error("🔥 Server error:", err);
-    return okJson({ error: "Server error", reason: "server_error" });
+    return errorJson({ error: "Server error", reason: "server_error" }, 500);
   }
 }
 
