@@ -143,6 +143,24 @@ function isValidInsightsPayload(obj) {
   if (!checkScorer(obj?.players?.home?.topScorer)) return false;
   if (!checkScorer(obj?.players?.away?.topScorer)) return false;
 
+  // Optional: stock illustration descriptors for each team (used by UI / image generators)
+  const ill = obj?.illustrations;
+  const checkIll = (x) => {
+    if (x == null) return true;
+    if (typeof x !== "object") return false;
+    if (typeof x.prompt !== "string" || x.prompt.trim().length < 20)
+      return false;
+    if (typeof x.trend !== "string" || !x.trend.trim()) return false;
+    if (typeof x.summary !== "string" || x.summary.trim().length < 10)
+      return false;
+    return true;
+  };
+  if (ill != null) {
+    if (typeof ill !== "object") return false;
+    if (!checkIll(ill?.home)) return false;
+    if (!checkIll(ill?.away)) return false;
+  }
+
   const ci = Number(obj?.confidence);
   if (!Number.isFinite(ci) || ci < 0 || ci > 100) return false;
 
@@ -409,23 +427,27 @@ export async function POST(req) {
   }
 
   const promptInsights = `
-Acționează ca un Analist Sportiv Senior. Trebuie să întorci DOAR un JSON valid (fără text, fără explicații, fără Markdown).
+You are a Senior Football Analyst. Return ONLY a single valid JSON object (no extra text, no explanations, no Markdown).
 
-DATE DE INTRARE:
-Meci: ${echipe}
-Liga: ${liga}
-Status curent: ${status}
+INPUT:
+Match: ${echipe}
+Competition: ${liga}
+Current status: ${status}
 
-SARCINĂ:
-Generează un payload JSON pentru elemente vizuale (pie chart + form illustrations) bazat pe analiza ta. Dacă nu ai suficiente date reale, estimează rezonabil și marchează incertitudinea prin câmpul confidence.
+GOAL:
+Provide DATA ONLY for a frontend that renders:
+1) a CSS pie chart (1X2 probabilities)
+2) a CSS "stock-style" form line for each team (using the series)
+3) two player highlight cards per team (best in-form + top scorer) when you are confident. If unsure, return null.
 
-REGULI CRITICE:
-- Răspunsul trebuie să fie DOAR JSON valid, o singură rădăcină obiect.
-- Probabilitățile trebuie să însumeze 100 (permite rotunjire +/-0.5).
-- Serii formă: valori 0..100 (minim 5 puncte) pentru fiecare echipă.
-- Nu inventa citate sau surse; doar scoruri/indici estimați.
+CRITICAL RULES:
+- Output MUST be ONLY valid JSON.
+- Probabilities MUST be INTEGERS and MUST sum to exactly 100.
+- Form series values MUST be INTEGERS in range 0..100, minimum 5 points.
+- Do NOT invent sources, quotes, or claims of having access to live databases.
+- If you are unsure about player names, set the player object to null and lower confidence.
 
-SCHEMA OBLIGATORIE:
+REQUIRED JSON SCHEMA:
 {
   "probabilities": { "homeWin": number, "draw": number, "awayWin": number },
   "teamForm": {
@@ -442,9 +464,30 @@ SCHEMA OBLIGATORIE:
       "topScorer": { "name": string, "goals": number, "formIndex": number } | null
     }
   },
+  "illustrations": {
+    "home": {
+      "trend": "up"|"down"|"flat",
+      "volatility": "low"|"medium"|"high",
+      "mood": "confident"|"balanced"|"unstable",
+      "summary": string,
+      "highlights": [{ "label": string, "value": number, "index": number }]
+    } | null,
+    "away": {
+      "trend": "up"|"down"|"flat",
+      "volatility": "low"|"medium"|"high",
+      "mood": "confident"|"balanced"|"unstable",
+      "summary": string,
+      "highlights": [{ "label": string, "value": number, "index": number }]
+    } | null
+  },
   "confidence": number,
   "notes": string
 }
+
+NOTES:
+- formIndex is an integer 0..100.
+- goals is an integer.
+- highlights.index is the position in the series (0-based). Keep highlights to max 4 per team.
 `;
 
   // MODE: insights (JSON for charts/illustrations)
