@@ -70,6 +70,85 @@ function cleanPlainText(input) {
   return s;
 }
 
+function extractFirstJsonObject(raw) {
+  const s = String(raw || "").trim();
+  const start = s.indexOf("{");
+  if (start === -1) return null;
+  // Find a matching closing brace using a simple brace counter
+  let depth = 0;
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        return s.slice(start, i + 1);
+      }
+    }
+  }
+  return null;
+}
+
+function isValidInsightsPayload(obj) {
+  if (!obj || typeof obj !== "object") return false;
+
+  const p = obj?.probabilities;
+  if (!p || typeof p !== "object") return false;
+  const hw = Number(p.homeWin);
+  const dr = Number(p.draw);
+  const aw = Number(p.awayWin);
+  if (![hw, dr, aw].every((n) => Number.isFinite(n))) return false;
+  // Allow small rounding error
+  const sum = hw + dr + aw;
+  if (sum < 99.5 || sum > 100.5) return false;
+  if ([hw, dr, aw].some((n) => n < 0 || n > 100)) return false;
+
+  const tf = obj?.teamForm;
+  if (!tf || typeof tf !== "object") return false;
+  const homeSeries = tf?.home?.series;
+  const awaySeries = tf?.away?.series;
+  if (!Array.isArray(homeSeries) || !Array.isArray(awaySeries)) return false;
+  if (homeSeries.length < 5 || awaySeries.length < 5) return false;
+  const okSeries = (arr) =>
+    arr.every(
+      (v) => Number.isFinite(Number(v)) && Number(v) >= 0 && Number(v) <= 100
+    );
+  if (!okSeries(homeSeries) || !okSeries(awaySeries)) return false;
+
+  // Players are optional, but if present must be shaped correctly
+  const checkPlayer = (pl) => {
+    if (pl == null) return true;
+    if (typeof pl !== "object") return false;
+    if (typeof pl.name !== "string" || !pl.name.trim()) return false;
+    if (typeof pl.role !== "string" || !pl.role.trim()) return false;
+    const fi = Number(pl.formIndex);
+    if (!Number.isFinite(fi) || fi < 0 || fi > 100) return false;
+    return true;
+  };
+
+  if (!checkPlayer(obj?.players?.home?.bestInForm)) return false;
+  if (!checkPlayer(obj?.players?.away?.bestInForm)) return false;
+
+  const checkScorer = (pl) => {
+    if (pl == null) return true;
+    if (typeof pl !== "object") return false;
+    if (typeof pl.name !== "string" || !pl.name.trim()) return false;
+    const goals = Number(pl.goals);
+    if (!Number.isFinite(goals) || goals < 0 || goals > 200) return false;
+    const fi = Number(pl.formIndex);
+    if (!Number.isFinite(fi) || fi < 0 || fi > 100) return false;
+    return true;
+  };
+
+  if (!checkScorer(obj?.players?.home?.topScorer)) return false;
+  if (!checkScorer(obj?.players?.away?.topScorer)) return false;
+
+  const ci = Number(obj?.confidence);
+  if (!Number.isFinite(ci) || ci < 0 || ci > 100) return false;
+
+  return true;
+}
+
 function looksLikeCodeOrMarkup(raw) {
   const s = String(raw || "");
   const lower = s.toLowerCase();
@@ -307,22 +386,133 @@ export async function POST(req) {
     return okJson({ error: "Invalid JSON body", reason: "invalid_json" });
   }
 
-  const { echipe, liga, status } = body;
+  const { echipe, liga, status, mode } = body;
 
   if (!echipe || !liga) {
     return okJson({ error: "Date incomplete", reason: "missing_fields" });
   }
 
   // Best-effort cache to avoid repeated calls (improves speed + reduces 502s)
-  const cacheKey = `${String(echipe).trim()}|${String(liga).trim()}|${String(
-    status || ""
-  ).trim()}`;
+  const cacheKey = `${String(mode || "analysis").trim()}|${String(
+    echipe
+  ).trim()}|${String(liga).trim()}|${String(status || "").trim()}`;
   const cached = cacheGet(cacheKey);
   if (cached) {
     const res = NextResponse.json(
-      { ok: true, analysis: cached },
+      mode && String(mode).toLowerCase() === "insights"
+        ? { ok: true, insights: cached }
+        : { ok: true, analysis: cached },
       { status: 200 }
     );
+    res.headers.set("Cache-Control", "public, max-age=60");
+    return withCors(res);
+  }
+
+  const promptInsights = `
+Acționează ca un Analist Sportiv Senior. Trebuie să întorci DOAR un JSON valid (fără text, fără explicații, fără Markdown).
+
+DATE DE INTRARE:
+Meci: ${echipe}
+Liga: ${liga}
+Status curent: ${status}
+
+SARCINĂ:
+Generează un payload JSON pentru elemente vizuale (pie chart + form illustrations) bazat pe analiza ta. Dacă nu ai suficiente date reale, estimează rezonabil și marchează incertitudinea prin câmpul confidence.
+
+REGULI CRITICE:
+- Răspunsul trebuie să fie DOAR JSON valid, o singură rădăcină obiect.
+- Probabilitățile trebuie să însumeze 100 (permite rotunjire +/-0.5).
+- Serii formă: valori 0..100 (minim 5 puncte) pentru fiecare echipă.
+- Nu inventa citate sau surse; doar scoruri/indici estimați.
+
+SCHEMA OBLIGATORIE:
+{
+  "probabilities": { "homeWin": number, "draw": number, "awayWin": number },
+  "teamForm": {
+    "home": { "label": string, "series": number[] },
+    "away": { "label": string, "series": number[] }
+  },
+  "players": {
+    "home": {
+      "bestInForm": { "name": string, "role": string, "formIndex": number } | null,
+      "topScorer": { "name": string, "goals": number, "formIndex": number } | null
+    },
+    "away": {
+      "bestInForm": { "name": string, "role": string, "formIndex": number } | null,
+      "topScorer": { "name": string, "goals": number, "formIndex": number } | null
+    }
+  },
+  "confidence": number,
+  "notes": string
+}
+`;
+
+  // MODE: insights (JSON for charts/illustrations)
+  if (String(mode || "analysis").toLowerCase() === "insights") {
+    let resp = await callOpenAI(promptInsights, 1);
+
+    if (!resp.ok) {
+      console.error("❌ OpenAI error (insights):", resp);
+      return errorJson(
+        {
+          error: "AI indisponibil momentan. Încearcă din nou.",
+          reason: "openai_error_insights",
+          upstream_status: resp.status || 502,
+          upstream_error: resp.error,
+        },
+        resp.status || 502
+      );
+    }
+
+    const raw = String(resp.rawText || "").trim();
+    const jsonText = extractFirstJsonObject(raw) || raw;
+
+    let insights;
+    try {
+      insights = JSON.parse(jsonText);
+    } catch (e) {
+      // Retry once with stricter instruction
+      const strict =
+        promptInsights +
+        "\n\nIMPORTANT: Răspunde acum cu DOAR JSON valid. Fără niciun caracter înainte sau după JSON.";
+      const resp2 = await callOpenAI(strict, 2);
+      if (!resp2.ok) {
+        console.error("❌ OpenAI error (insights retry):", resp2);
+        return errorJson(
+          {
+            error: "AI indisponibil momentan. Încearcă din nou.",
+            reason: "openai_error_insights_retry",
+            upstream_status: resp2.status || 502,
+            upstream_error: resp2.error,
+          },
+          resp2.status || 502
+        );
+      }
+      const raw2 = String(resp2.rawText || "").trim();
+      const jsonText2 = extractFirstJsonObject(raw2) || raw2;
+      try {
+        insights = JSON.parse(jsonText2);
+      } catch {
+        return okJson({
+          error: "Nu am putut genera un payload valid pentru grafice.",
+          reason: "invalid_insights_json",
+          ...(process.env.BETLOGIC_DEBUG === "1"
+            ? { debug: { raw: raw2?.slice?.(0, 2000) || raw2 } }
+            : {}),
+        });
+      }
+    }
+
+    if (!isValidInsightsPayload(insights)) {
+      return okJson({
+        error: "Payload-ul pentru grafice nu a trecut validarea.",
+        reason: "invalid_insights_shape",
+        ...(process.env.BETLOGIC_DEBUG === "1" ? { debug: { insights } } : {}),
+      });
+    }
+
+    cacheSet(cacheKey, insights);
+    const res = NextResponse.json({ ok: true, insights }, { status: 200 });
     res.headers.set("Cache-Control", "public, max-age=60");
     return withCors(res);
   }
