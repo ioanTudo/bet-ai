@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 
 const INTERNAL_KEY = process.env.BETLOGIC_INTERNAL_KEY;
+const FOOTBALL_DATA_KEY = process.env.FOOTBALL_DATA_API_KEY;
+const FOOTBALL_DATA_BASE = "https://api.football-data.org/v4";
 // Bump this when you change the insights schema/prompt so cached payloads don't keep old shapes.
 const INSIGHTS_SCHEMA_VERSION = "2026-01-25-v2";
 
@@ -114,6 +116,136 @@ function extractFirstJsonObject(raw) {
     }
   }
   return null;
+}
+
+function normTeamName(x) {
+  return String(x || "")
+    .toLowerCase()
+    .replace(/\b(fc|cf|sc|ac|afc|cfc)\b/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function pickCompetitionCodeFromLiga(liga) {
+  const s = String(liga || "").toLowerCase();
+  // Keep this small + safe. Extend as needed.
+  if (
+    s.includes("premier league") ||
+    (s.includes("england") && s.includes("prem"))
+  )
+    return "PL";
+  if (s.includes("la liga") || (s.includes("spain") && s.includes("liga")))
+    return "PD";
+  if (s.includes("serie a") || (s.includes("italy") && s.includes("serie")))
+    return "SA";
+  if (s.includes("bundesliga") || s.includes("germany")) return "BL1";
+  if (s.includes("ligue 1") || s.includes("france")) return "FL1";
+  if (s.includes("champions league") || s.includes("uefa champions"))
+    return "CL";
+  if (s.includes("europa league") || s.includes("uefa europa")) return "EL";
+  return null;
+}
+
+async function fdFetch(path, { signal } = {}) {
+  if (!FOOTBALL_DATA_KEY)
+    return {
+      ok: false,
+      status: 500,
+      data: null,
+      error: "Missing FOOTBALL_DATA_API_KEY",
+    };
+  const url = `${FOOTBALL_DATA_BASE}${path}`;
+  try {
+    const r = await fetch(url, {
+      headers: { "X-Auth-Token": FOOTBALL_DATA_KEY },
+      signal,
+    });
+    const data = await r.json().catch(() => null);
+    if (!r.ok) {
+      return {
+        ok: false,
+        status: r.status || 502,
+        data,
+        error: data?.message || "football-data error",
+      };
+    }
+    return { ok: true, status: 200, data, error: null };
+  } catch (e) {
+    return {
+      ok: false,
+      status: 502,
+      data: null,
+      error: String(e?.message || e),
+    };
+  }
+}
+
+async function getCompetitionTeams(code, { signal } = {}) {
+  if (!code) return null;
+  const r = await fdFetch(`/competitions/${encodeURIComponent(code)}/teams`, {
+    signal,
+  });
+  if (!r.ok) return null;
+  const teams = Array.isArray(r.data?.teams) ? r.data.teams : [];
+  return teams;
+}
+
+function bestTeamMatchByName(teams, targetName) {
+  const t = normTeamName(targetName);
+  if (!t || !Array.isArray(teams) || !teams.length) return null;
+
+  // 1) exact normalized match
+  let hit = teams.find((x) => normTeamName(x?.name) === t);
+  if (hit) return hit;
+
+  // 2) includes match
+  hit = teams.find((x) => {
+    const n = normTeamName(x?.name);
+    return n && (n.includes(t) || t.includes(n));
+  });
+  if (hit) return hit;
+
+  // 3) token overlap score
+  const tt = new Set(t.split(" ").filter(Boolean));
+  let best = null;
+  let bestScore = 0;
+  for (const x of teams) {
+    const n = normTeamName(x?.name);
+    if (!n) continue;
+    const nt = new Set(n.split(" ").filter(Boolean));
+    let score = 0;
+    for (const w of tt) if (nt.has(w)) score++;
+    if (score > bestScore) {
+      bestScore = score;
+      best = x;
+    }
+  }
+  return bestScore >= 1 ? best : null;
+}
+
+async function getTeamSquad(teamId, { signal } = {}) {
+  if (!teamId) return null;
+  const r = await fdFetch(`/teams/${encodeURIComponent(teamId)}`, { signal });
+  if (!r.ok) return null;
+  const squad = Array.isArray(r.data?.squad) ? r.data.squad : [];
+  // keep only essential fields
+  return squad
+    .map((p) => ({
+      name: p?.name || "",
+      position: p?.position || "",
+      nationality: p?.nationality || "",
+    }))
+    .filter((p) => p.name && String(p.name).trim().length >= 2);
+}
+
+function safeSquadListForPrompt(squad) {
+  const arr = Array.isArray(squad) ? squad : [];
+  // Limit prompt size
+  const top = arr.slice(0, 26);
+  return top
+    .map((p) => ({ name: p.name, position: p.position }))
+    .filter((p) => p.name);
 }
 
 function isValidInsightsPayload(obj) {
@@ -474,6 +606,11 @@ Match: ${echipe}
 Competition: ${liga}
 Current status: ${status}
 
+ROSTER CONSTRAINT (IMPORTANT):
+- You will receive optional squad lists for Home and Away.
+- If a squad list is provided, any player name you output MUST be picked EXACTLY from that squad list.
+- If you cannot confidently pick a player from the provided squad, return the player object as null.
+
 GOAL:
 Provide DATA ONLY for a frontend that renders:
 1) a CSS pie chart (1X2 probabilities)
@@ -536,7 +673,54 @@ NOTES:
 
   // MODE: insights (JSON for charts/illustrations)
   if (String(mode || "analysis").toLowerCase() === "insights") {
-    let resp = await callOpenAI(promptInsights, 1);
+    // ---- Optional: enrich prompt with CURRENT squads from football-data.org ----
+    let enrichedPrompt = promptInsights;
+    try {
+      const code = pickCompetitionCodeFromLiga(liga);
+      if (FOOTBALL_DATA_KEY && code) {
+        const ctrl = new AbortController();
+        const tid = setTimeout(() => ctrl.abort(), 6500);
+        const teams = await getCompetitionTeams(code, { signal: ctrl.signal });
+        clearTimeout(tid);
+
+        if (teams && teams.length) {
+          // Expect format "Home vs Away"
+          const parts = String(echipe || "").split(/\s+vs\s+/i);
+          const homeName = (parts[0] || "").trim();
+          const awayName = (parts[1] || "").trim();
+
+          const homeTeam = bestTeamMatchByName(teams, homeName);
+          const awayTeam = bestTeamMatchByName(teams, awayName);
+
+          const ctrl2 = new AbortController();
+          const tid2 = setTimeout(() => ctrl2.abort(), 6500);
+          const [homeSquad, awaySquad] = await Promise.all([
+            homeTeam?.id
+              ? getTeamSquad(homeTeam.id, { signal: ctrl2.signal })
+              : Promise.resolve(null),
+            awayTeam?.id
+              ? getTeamSquad(awayTeam.id, { signal: ctrl2.signal })
+              : Promise.resolve(null),
+          ]);
+          clearTimeout(tid2);
+
+          const hs = safeSquadListForPrompt(homeSquad);
+          const as = safeSquadListForPrompt(awaySquad);
+
+          if ((hs && hs.length) || (as && as.length)) {
+            enrichedPrompt += `\n\nCURRENT SQUADS (for validation only):\nHome squad: ${JSON.stringify(
+              hs || []
+            )}\nAway squad: ${JSON.stringify(
+              as || []
+            )}\n\nREMINDER: Player names MUST come from these squads if provided, otherwise set players to null.`;
+          }
+        }
+      }
+    } catch (e) {
+      // silently ignore; insights should still work without squads
+    }
+
+    let resp = await callOpenAI(enrichedPrompt, 1);
 
     if (!resp.ok) {
       console.error("❌ OpenAI error (insights):", resp);
@@ -560,7 +744,7 @@ NOTES:
     } catch (e) {
       // Retry once with stricter instruction
       const strict =
-        promptInsights +
+        enrichedPrompt +
         "\n\nIMPORTANT: Răspunde acum cu DOAR JSON valid. Fără niciun caracter înainte sau după JSON.";
       const resp2 = await callOpenAI(strict, 2);
       if (!resp2.ok) {
