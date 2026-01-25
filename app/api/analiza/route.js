@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 
 const INTERNAL_KEY = process.env.BETLOGIC_INTERNAL_KEY;
+// Bump this when you change the insights schema/prompt so cached payloads don't keep old shapes.
+const INSIGHTS_SCHEMA_VERSION = "2026-01-25-v2";
 
 // Simple in-memory cache (best-effort). Helps performance and reduces 502s from upstream.
 // Note: Vercel/serverless may evict between invocations; still useful under load.
@@ -423,9 +425,11 @@ export async function POST(req) {
   }
 
   // Best-effort cache to avoid repeated calls (improves speed + reduces 502s)
-  const cacheKey = `${String(mode || "analysis").trim()}|${String(
-    echipe
-  ).trim()}|${String(liga).trim()}|${String(status || "").trim()}`;
+  const cacheKey = `${INSIGHTS_SCHEMA_VERSION}|${String(
+    mode || "analysis"
+  ).trim()}|${String(echipe).trim()}|${String(liga).trim()}|${String(
+    status || ""
+  ).trim()}`;
   const cached = cacheGet(cacheKey);
   if (cached) {
     const res = NextResponse.json(
@@ -570,8 +574,9 @@ NOTES:
       });
     }
 
-    // Normalize naming to be frontend-friendly (aliases)
+    // Normalize naming to be frontend-friendly (aliases + legacy keys used by older UI)
     try {
+      // ---- probabilities aliases ----
       if (insights && insights.probabilities) {
         const p = insights.probabilities;
         const homeWin = Number(p.homeWin ?? p.home ?? p.h);
@@ -593,6 +598,73 @@ NOTES:
           awayWinPct: awayWin,
         };
       }
+
+      // ---- quick summary aliases (so UI can show it under charts) ----
+      if (typeof insights?.quickSummary === "string") {
+        // common aliases the UI might look for
+        insights.summary = insights.quickSummary;
+        insights.text = insights.quickSummary;
+      }
+
+      // ---- players legacy mapping ----
+      // Your current frontend hydrate() was written to read:
+      //   payload.bestPlayers.home/away -> {name, form}
+      // so we map the new schema (players.bestInForm/topScorer) to those fields.
+      const pl = insights?.players || {};
+
+      const mkForm = (x) => {
+        if (!x) return "—";
+        const fi = Number(x.formIndex);
+        const fiTxt = Number.isFinite(fi) ? `${Math.round(fi)}/100` : "—";
+        const role = x.role ? String(x.role) : "";
+        return role ? `Form ${fiTxt} • ${role}` : `Form ${fiTxt}`;
+      };
+
+      const mkScorer = (x) => {
+        if (!x) return "—";
+        const g = Number(x.goals);
+        const gTxt = Number.isFinite(g) ? `${Math.round(g)} goals` : "—";
+        const fi = Number(x.formIndex);
+        const fiTxt = Number.isFinite(fi) ? `${Math.round(fi)}/100` : "—";
+        return `Top scorer: ${gTxt} • Form ${fiTxt}`;
+      };
+
+      const homeBest = pl?.home?.bestInForm || null;
+      const awayBest = pl?.away?.bestInForm || null;
+      const homeTop = pl?.home?.topScorer || null;
+      const awayTop = pl?.away?.topScorer || null;
+
+      // Legacy containers
+      insights.bestPlayers = {
+        home: homeBest
+          ? { name: String(homeBest.name || ""), form: mkForm(homeBest) }
+          : { name: "—", form: "—" },
+        away: awayBest
+          ? { name: String(awayBest.name || ""), form: mkForm(awayBest) }
+          : { name: "—", form: "—" },
+      };
+
+      // Optional extra legacy field if you want to show scorers too
+      insights.topScorers = {
+        home: homeTop
+          ? { name: String(homeTop.name || ""), form: mkScorer(homeTop) }
+          : { name: "—", form: "—" },
+        away: awayTop
+          ? { name: String(awayTop.name || ""), form: mkScorer(awayTop) }
+          : { name: "—", form: "—" },
+      };
+
+      // Also provide very simple flat aliases (useful for templates)
+      insights.playerHighlights = {
+        home: {
+          bestInForm: homeBest,
+          topScorer: homeTop,
+        },
+        away: {
+          bestInForm: awayBest,
+          topScorer: awayTop,
+        },
+      };
     } catch (e) {}
 
     cacheSet(cacheKey, insights);
