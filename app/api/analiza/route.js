@@ -610,6 +610,7 @@ ROSTER CONSTRAINT (IMPORTANT):
 - You will receive optional squad lists for Home and Away.
 - If a squad list is provided, any player name you output MUST be picked EXACTLY from that squad list.
 - If you cannot confidently pick a player from the provided squad, return the player object as null.
+- If NO squad list is provided for a side, you MUST return that side's players as null (do not guess).
 
 GOAL:
 Provide DATA ONLY for a frontend that renders:
