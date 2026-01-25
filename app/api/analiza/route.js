@@ -73,6 +73,30 @@ function cleanPlainText(input) {
   return s;
 }
 
+function looksLikeCodeOrMarkup(text) {
+  const s = String(text || "");
+  if (!s.trim()) return false;
+
+  // HTML/XML-ish
+  if (/<\/?[a-z][\s\S]*?>/i.test(s)) return true;
+
+  // Markdown fences
+  if (/```[\s\S]*?```/.test(s)) return true;
+
+  // Common JS/code signals
+  if (/(^|\n)\s*(import|export)\s+/m.test(s)) return true;
+  if (/(^|\n)\s*(const|let|var)\s+\w+/m.test(s)) return true;
+  if (/\bfunction\b\s*\w*\s*\(/.test(s)) return true;
+  if (/=>\s*\{?/.test(s)) return true;
+
+  // JSON-ish (avoid rejecting normal text that mentions braces once)
+  const bracePairs =
+    (s.match(/\{/g) || []).length + (s.match(/\}/g) || []).length;
+  if (bracePairs >= 4 && /"\s*:\s*/.test(s)) return true;
+
+  return false;
+}
+
 function extractFirstJsonObject(raw) {
   const s = String(raw || "").trim();
   const start = s.indexOf("{");
