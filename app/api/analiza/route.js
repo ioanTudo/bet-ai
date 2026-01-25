@@ -31,6 +31,7 @@ function withCors(res) {
     "Access-Control-Allow-Headers",
     "Content-Type, Authorization"
   );
+  res.headers.set("Access-Control-Allow-Credentials", "true");
   return res;
 }
 
@@ -92,69 +93,115 @@ function extractFirstJsonObject(raw) {
 function isValidInsightsPayload(obj) {
   if (!obj || typeof obj !== "object") return false;
 
+  // --- probabilities ---
   const p = obj?.probabilities;
   if (!p || typeof p !== "object") return false;
-  const hw = Number(p.homeWin);
-  const dr = Number(p.draw);
-  const aw = Number(p.awayWin);
+
+  // Accept either {homeWin, draw, awayWin} or aliases {home, draw, away}
+  const hw = Number(p.homeWin ?? p.home ?? p.h);
+  const dr = Number(p.draw ?? p.d);
+  const aw = Number(p.awayWin ?? p.away ?? p.a);
+
   if (![hw, dr, aw].every((n) => Number.isFinite(n))) return false;
-  // Allow small rounding error
+
+  // Must be integers and sum EXACTLY 100
+  if (![hw, dr, aw].every((n) => Number.isInteger(n))) return false;
   const sum = hw + dr + aw;
-  if (sum < 99.5 || sum > 100.5) return false;
+  if (sum !== 100) return false;
   if ([hw, dr, aw].some((n) => n < 0 || n > 100)) return false;
 
+  // --- team form series ---
   const tf = obj?.teamForm;
   if (!tf || typeof tf !== "object") return false;
-  const homeSeries = tf?.home?.series;
-  const awaySeries = tf?.away?.series;
+
+  const home = tf?.home;
+  const away = tf?.away;
+  const homeSeries = home?.series;
+  const awaySeries = away?.series;
+
+  if (!home || typeof home !== "object") return false;
+  if (!away || typeof away !== "object") return false;
+  if (typeof home.label !== "string") return false;
+  if (typeof away.label !== "string") return false;
+
   if (!Array.isArray(homeSeries) || !Array.isArray(awaySeries)) return false;
   if (homeSeries.length < 5 || awaySeries.length < 5) return false;
+
   const okSeries = (arr) =>
     arr.every(
-      (v) => Number.isFinite(Number(v)) && Number(v) >= 0 && Number(v) <= 100
+      (v) => Number.isInteger(Number(v)) && Number(v) >= 0 && Number(v) <= 100
     );
+
   if (!okSeries(homeSeries) || !okSeries(awaySeries)) return false;
 
-  // Players are optional, but if present must be shaped correctly
-  const checkPlayer = (pl) => {
+  // --- players (optional) ---
+  const checkBestInForm = (pl) => {
     if (pl == null) return true;
     if (typeof pl !== "object") return false;
     if (typeof pl.name !== "string" || !pl.name.trim()) return false;
     if (typeof pl.role !== "string" || !pl.role.trim()) return false;
     const fi = Number(pl.formIndex);
-    if (!Number.isFinite(fi) || fi < 0 || fi > 100) return false;
+    if (!Number.isFinite(fi) || !Number.isInteger(fi) || fi < 0 || fi > 100)
+      return false;
     return true;
   };
 
-  if (!checkPlayer(obj?.players?.home?.bestInForm)) return false;
-  if (!checkPlayer(obj?.players?.away?.bestInForm)) return false;
-
-  const checkScorer = (pl) => {
+  const checkTopScorer = (pl) => {
     if (pl == null) return true;
     if (typeof pl !== "object") return false;
     if (typeof pl.name !== "string" || !pl.name.trim()) return false;
     const goals = Number(pl.goals);
-    if (!Number.isFinite(goals) || goals < 0 || goals > 200) return false;
+    if (
+      !Number.isFinite(goals) ||
+      !Number.isInteger(goals) ||
+      goals < 0 ||
+      goals > 200
+    )
+      return false;
     const fi = Number(pl.formIndex);
-    if (!Number.isFinite(fi) || fi < 0 || fi > 100) return false;
+    if (!Number.isFinite(fi) || !Number.isInteger(fi) || fi < 0 || fi > 100)
+      return false;
     return true;
   };
 
-  if (!checkScorer(obj?.players?.home?.topScorer)) return false;
-  if (!checkScorer(obj?.players?.away?.topScorer)) return false;
+  if (!checkBestInForm(obj?.players?.home?.bestInForm)) return false;
+  if (!checkBestInForm(obj?.players?.away?.bestInForm)) return false;
+  if (!checkTopScorer(obj?.players?.home?.topScorer)) return false;
+  if (!checkTopScorer(obj?.players?.away?.topScorer)) return false;
 
-  // Optional: stock illustration descriptors for each team (used by UI / image generators)
+  // --- illustrations (optional) ---
   const ill = obj?.illustrations;
+  const allowedTrend = new Set(["up", "down", "flat"]);
+  const allowedVol = new Set(["low", "medium", "high"]);
+  const allowedMood = new Set(["confident", "balanced", "unstable"]);
+
+  const checkHighlights = (arr) => {
+    if (!Array.isArray(arr)) return false;
+    if (arr.length > 4) return false;
+    return arr.every((h) => {
+      if (!h || typeof h !== "object") return false;
+      if (typeof h.label !== "string" || !h.label.trim()) return false;
+      const v = Number(h.value);
+      const idx = Number(h.index);
+      if (!Number.isFinite(v) || v < 0 || v > 100) return false;
+      if (!Number.isFinite(idx) || !Number.isInteger(idx) || idx < 0)
+        return false;
+      return true;
+    });
+  };
+
   const checkIll = (x) => {
     if (x == null) return true;
     if (typeof x !== "object") return false;
-    if (typeof x.prompt !== "string" || x.prompt.trim().length < 20)
+    if (!allowedTrend.has(String(x.trend))) return false;
+    if (!allowedVol.has(String(x.volatility))) return false;
+    if (!allowedMood.has(String(x.mood))) return false;
+    if (typeof x.summary !== "string" || x.summary.trim().length < 5)
       return false;
-    if (typeof x.trend !== "string" || !x.trend.trim()) return false;
-    if (typeof x.summary !== "string" || x.summary.trim().length < 10)
-      return false;
+    if (!checkHighlights(x.highlights || [])) return false;
     return true;
   };
+
   if (ill != null) {
     if (typeof ill !== "object") return false;
     if (!checkIll(ill?.home)) return false;
@@ -162,53 +209,12 @@ function isValidInsightsPayload(obj) {
   }
 
   const ci = Number(obj?.confidence);
-  if (!Number.isFinite(ci) || ci < 0 || ci > 100) return false;
+  if (!Number.isFinite(ci) || !Number.isInteger(ci) || ci < 0 || ci > 100)
+    return false;
+
+  if (obj?.notes != null && typeof obj.notes !== "string") return false;
 
   return true;
-}
-
-function looksLikeCodeOrMarkup(raw) {
-  const s = String(raw || "");
-  const lower = s.toLowerCase();
-
-  // Strong signals for code/markup/data dumps
-  const patterns = [
-    /```[\s\S]*?```/m,
-    /<\/?(html|head|body|script|style|div|span|pre|code)[\s>]/i,
-    /<\?php/i,
-    /\b(import|export)\b\s+/i,
-    /\b(function|class)\b\s+[a-z0-9_]+\s*\(/i,
-    /\bconst\b\s+[a-z0-9_]+\s*=/i,
-    /\blet\b\s+[a-z0-9_]+\s*=/i,
-    /\bvar\b\s+[a-z0-9_]+\s*=/i,
-    /\breturn\b\s+/i,
-    /\bconsole\.log\b/i,
-    /\bSELECT\b\s+.*\bFROM\b/i,
-    /^\s*\{\s*"[^"]+"\s*:/m, // JSON object
-    /^\s*\[\s*\{\s*"[^"]+"\s*:/m, // JSON array of objects
-    /^\s*<\?xml\b/i,
-  ];
-
-  if (patterns.some((re) => re.test(s))) return true;
-
-  // If it still contains lots of typical markdown/formatting artifacts
-  if (/(^|\n)\s*#{1,6}\s+/.test(s)) return true;
-  if (/(^|\n)\s*[-•]\s+/.test(s)) return true;
-
-  // If it's extremely short, it's usually not a real analysis
-  const stripped = s.replace(/\s+/g, " ").trim();
-  if (stripped.length < 120) return true;
-
-  // If it contains too many braces/semicolons relative to length
-  const braceCount = (s.match(/[{}]/g) || []).length;
-  const semiCount = (s.match(/;/g) || []).length;
-  if (braceCount + semiCount >= 14) return true;
-
-  // If it looks like an error message or system-like output
-  if (lower.includes("openrouter") && lower.includes("error")) return true;
-  if (lower.includes("missing") && lower.includes("key")) return true;
-
-  return false;
 }
 
 function isValidAnalysisText(raw) {
@@ -553,6 +559,28 @@ NOTES:
         ...(process.env.BETLOGIC_DEBUG === "1" ? { debug: { insights } } : {}),
       });
     }
+
+    // Normalize naming to be frontend-friendly (aliases)
+    try {
+      if (insights && insights.probabilities) {
+        const p = insights.probabilities;
+        const homeWin = Number(p.homeWin ?? p.home ?? p.h);
+        const draw = Number(p.draw ?? p.d);
+        const awayWin = Number(p.awayWin ?? p.away ?? p.a);
+
+        insights.probabilities = {
+          homeWin,
+          draw,
+          awayWin,
+          // aliases
+          home: homeWin,
+          away: awayWin,
+          h: homeWin,
+          d: draw,
+          a: awayWin,
+        };
+      }
+    } catch (e) {}
 
     cacheSet(cacheKey, insights);
     const res = NextResponse.json({ ok: true, insights }, { status: 200 });
