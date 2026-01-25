@@ -208,6 +208,12 @@ function isValidInsightsPayload(obj) {
     if (!checkIll(ill?.away)) return false;
   }
 
+  // --- quickSummary (required) ---
+  if (typeof obj?.quickSummary !== "string") return false;
+  const qs = obj.quickSummary.trim();
+  // keep it short-ish and useful
+  if (qs.length < 20 || qs.length > 420) return false;
+
   const ci = Number(obj?.confidence);
   if (!Number.isFinite(ci) || !Number.isInteger(ci) || ci < 0 || ci > 100)
     return false;
@@ -445,11 +451,13 @@ Provide DATA ONLY for a frontend that renders:
 1) a CSS pie chart (1X2 probabilities)
 2) a CSS "stock-style" form line for each team (using the series)
 3) two player highlight cards per team (best in-form + top scorer) when you are confident. If unsure, return null.
+4) a short English summary under the charts (2–3 concise sentences with key insights only, neutral tone, no betting advice).
 
 CRITICAL RULES:
 - Output MUST be ONLY valid JSON.
 - Probabilities MUST be INTEGERS and MUST sum to exactly 100.
 - Form series values MUST be INTEGERS in range 0..100, minimum 5 points.
+- quickSummary MUST be English, 2–3 short sentences, no emojis, no marketing language, no betting tips.
 - Do NOT invent sources, quotes, or claims of having access to live databases.
 - If you are unsure about player names, set the player object to null and lower confidence.
 
@@ -486,6 +494,7 @@ REQUIRED JSON SCHEMA:
       "highlights": [{ "label": string, "value": number, "index": number }]
     } | null
   },
+  "quickSummary": string,
   "confidence": number,
   "notes": string
 }
@@ -494,6 +503,7 @@ NOTES:
 - formIndex is an integer 0..100.
 - goals is an integer.
 - highlights.index is the position in the series (0-based). Keep highlights to max 4 per team.
+- illustrations.summary can be short (1 sentence) and must be neutral.
 `;
 
   // MODE: insights (JSON for charts/illustrations)
@@ -572,12 +582,15 @@ NOTES:
           homeWin,
           draw,
           awayWin,
-          // aliases
+          // aliases for different frontends
           home: homeWin,
           away: awayWin,
           h: homeWin,
           d: draw,
           a: awayWin,
+          homeWinPct: homeWin,
+          drawPct: draw,
+          awayWinPct: awayWin,
         };
       }
     } catch (e) {}
