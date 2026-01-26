@@ -575,13 +575,13 @@ GOAL:
 Provide DATA ONLY for a frontend that renders:
 1) a CSS pie chart (1X2 probabilities)
 2) a CSS "stock-style" form line for each team (using the series)
-3) a short English summary under the charts (2–3 concise sentences with key insights only, neutral tone, no betting advice).
+3) a detailed English summary under the charts providing a tactical and statistical overview.
 
 CRITICAL RULES:
 - Output MUST be ONLY valid JSON.
 - Probabilities MUST be INTEGERS and MUST sum to exactly 100.
 - Form series values MUST be INTEGERS in range 0..100, minimum 5 points.
-- quickSummary MUST be English, 2–3 short sentences, no emojis, no marketing language, no betting tips.
+- quickSummary MUST be English, detailed (4–6 concise sentences). It should cover current form, tactical setup, and key statistical factors. Use a neutral, professional tone. No emojis, no marketing language, no betting tips.
 - Do NOT invent sources, quotes, or claims of having access to live databases.
 
 REQUIRED JSON SCHEMA:
@@ -615,6 +615,7 @@ REQUIRED JSON SCHEMA:
 NOTES:
 - highlights.index is the position in the series (0-based). Keep highlights to max 4 per team.
 - illustrations.summary can be short (1 sentence) and must be neutral.
+- The quickSummary should now provide a deeper analysis compared to previous versions, integrating team momentum and situational context.
 `;
 
   // MODE: insights (JSON for charts/illustrations)
