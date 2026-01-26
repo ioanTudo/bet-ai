@@ -4,7 +4,7 @@ const INTERNAL_KEY = process.env.BETLOGIC_INTERNAL_KEY;
 const FOOTBALL_DATA_KEY = process.env.FOOTBALL_DATA_API_KEY;
 const FOOTBALL_DATA_BASE = "https://api.football-data.org/v4";
 // Bump this when you change the insights schema/prompt so cached payloads don't keep old shapes.
-const INSIGHTS_SCHEMA_VERSION = "2026-01-25-v2";
+const INSIGHTS_SCHEMA_VERSION = "2026-01-26-v3";
 
 // Simple in-memory cache (best-effort). Helps performance and reduces 502s from upstream.
 // Note: Vercel/serverless may evict between invocations; still useful under load.
@@ -292,41 +292,6 @@ function isValidInsightsPayload(obj) {
 
   if (!okSeries(homeSeries) || !okSeries(awaySeries)) return false;
 
-  // --- players (optional) ---
-  const checkBestInForm = (pl) => {
-    if (pl == null) return true;
-    if (typeof pl !== "object") return false;
-    if (typeof pl.name !== "string" || !pl.name.trim()) return false;
-    if (typeof pl.role !== "string" || !pl.role.trim()) return false;
-    const fi = Number(pl.formIndex);
-    if (!Number.isFinite(fi) || !Number.isInteger(fi) || fi < 0 || fi > 100)
-      return false;
-    return true;
-  };
-
-  const checkTopScorer = (pl) => {
-    if (pl == null) return true;
-    if (typeof pl !== "object") return false;
-    if (typeof pl.name !== "string" || !pl.name.trim()) return false;
-    const goals = Number(pl.goals);
-    if (
-      !Number.isFinite(goals) ||
-      !Number.isInteger(goals) ||
-      goals < 0 ||
-      goals > 200
-    )
-      return false;
-    const fi = Number(pl.formIndex);
-    if (!Number.isFinite(fi) || !Number.isInteger(fi) || fi < 0 || fi > 100)
-      return false;
-    return true;
-  };
-
-  if (!checkBestInForm(obj?.players?.home?.bestInForm)) return false;
-  if (!checkBestInForm(obj?.players?.away?.bestInForm)) return false;
-  if (!checkTopScorer(obj?.players?.home?.topScorer)) return false;
-  if (!checkTopScorer(obj?.players?.away?.topScorer)) return false;
-
   // --- illustrations (optional) ---
   const ill = obj?.illustrations;
   const allowedTrend = new Set(["up", "down", "flat"]);
@@ -606,18 +571,11 @@ Match: ${echipe}
 Competition: ${liga}
 Current status: ${status}
 
-ROSTER CONSTRAINT (IMPORTANT):
-- You will receive optional squad lists for Home and Away.
-- If a squad list is provided, any player name you output MUST be picked EXACTLY from that squad list.
-- If you cannot confidently pick a player from the provided squad, return the player object as null.
-- If NO squad list is provided for a side, you MUST return that side's players as null (do not guess).
-
 GOAL:
 Provide DATA ONLY for a frontend that renders:
 1) a CSS pie chart (1X2 probabilities)
 2) a CSS "stock-style" form line for each team (using the series)
-3) two player highlight cards per team (best in-form + top scorer) when you are confident. If unsure, return null.
-4) a short English summary under the charts (2–3 concise sentences with key insights only, neutral tone, no betting advice).
+3) a short English summary under the charts (2–3 concise sentences with key insights only, neutral tone, no betting advice).
 
 CRITICAL RULES:
 - Output MUST be ONLY valid JSON.
@@ -625,7 +583,6 @@ CRITICAL RULES:
 - Form series values MUST be INTEGERS in range 0..100, minimum 5 points.
 - quickSummary MUST be English, 2–3 short sentences, no emojis, no marketing language, no betting tips.
 - Do NOT invent sources, quotes, or claims of having access to live databases.
-- If you are unsure about player names, set the player object to null and lower confidence.
 
 REQUIRED JSON SCHEMA:
 {
@@ -633,16 +590,6 @@ REQUIRED JSON SCHEMA:
   "teamForm": {
     "home": { "label": string, "series": number[] },
     "away": { "label": string, "series": number[] }
-  },
-  "players": {
-    "home": {
-      "bestInForm": { "name": string, "role": string, "formIndex": number } | null,
-      "topScorer": { "name": string, "goals": number, "formIndex": number } | null
-    },
-    "away": {
-      "bestInForm": { "name": string, "role": string, "formIndex": number } | null,
-      "topScorer": { "name": string, "goals": number, "formIndex": number } | null
-    }
   },
   "illustrations": {
     "home": {
@@ -666,8 +613,6 @@ REQUIRED JSON SCHEMA:
 }
 
 NOTES:
-- formIndex is an integer 0..100.
-- goals is an integer.
 - highlights.index is the position in the series (0-based). Keep highlights to max 4 per team.
 - illustrations.summary can be short (1 sentence) and must be neutral.
 `;
@@ -675,53 +620,8 @@ NOTES:
   // MODE: insights (JSON for charts/illustrations)
   if (String(mode || "analysis").toLowerCase() === "insights") {
     // ---- Optional: enrich prompt with CURRENT squads from football-data.org ----
-    let enrichedPrompt = promptInsights;
-    try {
-      const code = pickCompetitionCodeFromLiga(liga);
-      if (FOOTBALL_DATA_KEY && code) {
-        const ctrl = new AbortController();
-        const tid = setTimeout(() => ctrl.abort(), 6500);
-        const teams = await getCompetitionTeams(code, { signal: ctrl.signal });
-        clearTimeout(tid);
 
-        if (teams && teams.length) {
-          // Expect format "Home vs Away"
-          const parts = String(echipe || "").split(/\s+vs\s+/i);
-          const homeName = (parts[0] || "").trim();
-          const awayName = (parts[1] || "").trim();
-
-          const homeTeam = bestTeamMatchByName(teams, homeName);
-          const awayTeam = bestTeamMatchByName(teams, awayName);
-
-          const ctrl2 = new AbortController();
-          const tid2 = setTimeout(() => ctrl2.abort(), 6500);
-          const [homeSquad, awaySquad] = await Promise.all([
-            homeTeam?.id
-              ? getTeamSquad(homeTeam.id, { signal: ctrl2.signal })
-              : Promise.resolve(null),
-            awayTeam?.id
-              ? getTeamSquad(awayTeam.id, { signal: ctrl2.signal })
-              : Promise.resolve(null),
-          ]);
-          clearTimeout(tid2);
-
-          const hs = safeSquadListForPrompt(homeSquad);
-          const as = safeSquadListForPrompt(awaySquad);
-
-          if ((hs && hs.length) || (as && as.length)) {
-            enrichedPrompt += `\n\nCURRENT SQUADS (for validation only):\nHome squad: ${JSON.stringify(
-              hs || []
-            )}\nAway squad: ${JSON.stringify(
-              as || []
-            )}\n\nREMINDER: Player names MUST come from these squads if provided, otherwise set players to null.`;
-          }
-        }
-      }
-    } catch (e) {
-      // silently ignore; insights should still work without squads
-    }
-
-    let resp = await callOpenAI(enrichedPrompt, 1);
+    let resp = await callOpenAI(promptInsights, 1);
 
     if (!resp.ok) {
       console.error("❌ OpenAI error (insights):", resp);
@@ -745,7 +645,7 @@ NOTES:
     } catch (e) {
       // Retry once with stricter instruction
       const strict =
-        enrichedPrompt +
+        promptInsights +
         "\n\nIMPORTANT: Răspunde acum cu DOAR JSON valid. Fără niciun caracter înainte sau după JSON.";
       const resp2 = await callOpenAI(strict, 2);
       if (!resp2.ok) {
@@ -814,66 +714,6 @@ NOTES:
         insights.summary = insights.quickSummary;
         insights.text = insights.quickSummary;
       }
-
-      // ---- players legacy mapping ----
-      // Your current frontend hydrate() was written to read:
-      //   payload.bestPlayers.home/away -> {name, form}
-      // so we map the new schema (players.bestInForm/topScorer) to those fields.
-      const pl = insights?.players || {};
-
-      const mkForm = (x) => {
-        if (!x) return "—";
-        const fi = Number(x.formIndex);
-        const fiTxt = Number.isFinite(fi) ? `${Math.round(fi)}/100` : "—";
-        const role = x.role ? String(x.role) : "";
-        return role ? `Form ${fiTxt} • ${role}` : `Form ${fiTxt}`;
-      };
-
-      const mkScorer = (x) => {
-        if (!x) return "—";
-        const g = Number(x.goals);
-        const gTxt = Number.isFinite(g) ? `${Math.round(g)} goals` : "—";
-        const fi = Number(x.formIndex);
-        const fiTxt = Number.isFinite(fi) ? `${Math.round(fi)}/100` : "—";
-        return `Top scorer: ${gTxt} • Form ${fiTxt}`;
-      };
-
-      const homeBest = pl?.home?.bestInForm || null;
-      const awayBest = pl?.away?.bestInForm || null;
-      const homeTop = pl?.home?.topScorer || null;
-      const awayTop = pl?.away?.topScorer || null;
-
-      // Legacy containers
-      insights.bestPlayers = {
-        home: homeBest
-          ? { name: String(homeBest.name || ""), form: mkForm(homeBest) }
-          : { name: "—", form: "—" },
-        away: awayBest
-          ? { name: String(awayBest.name || ""), form: mkForm(awayBest) }
-          : { name: "—", form: "—" },
-      };
-
-      // Optional extra legacy field if you want to show scorers too
-      insights.topScorers = {
-        home: homeTop
-          ? { name: String(homeTop.name || ""), form: mkScorer(homeTop) }
-          : { name: "—", form: "—" },
-        away: awayTop
-          ? { name: String(awayTop.name || ""), form: mkScorer(awayTop) }
-          : { name: "—", form: "—" },
-      };
-
-      // Also provide very simple flat aliases (useful for templates)
-      insights.playerHighlights = {
-        home: {
-          bestInForm: homeBest,
-          topScorer: homeTop,
-        },
-        away: {
-          bestInForm: awayBest,
-          topScorer: awayTop,
-        },
-      };
     } catch (e) {}
 
     cacheSet(cacheKey, insights);
