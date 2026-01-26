@@ -393,35 +393,19 @@ function hasAllMainSections(text) {
 }
 
 async function callOpenAI(userPrompt, attempt) {
-  // Direct OpenAI call (Chat Completions). Retries on transient errors/timeouts.
-  const maxAttempts = 3;
-  const baseTimeoutMs = Number(process.env.OPENAI_TIMEOUT_MS || 35000);
-
-  const isRetryableStatus = (status) =>
-    status === 408 ||
-    status === 409 ||
-    status === 425 ||
-    status === 429 ||
-    status === 500 ||
-    status === 502 ||
-    status === 503 ||
-    status === 504;
+  const maxAttempts = 2;
+  const baseTimeoutMs = 25000;
 
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    return {
-      ok: false,
-      status: 500,
-      error: "Missing OpenAI API key",
-      raw: "OPENAI_API_KEY is not set",
-    };
+    return { ok: false, status: 500, error: "Missing OpenAI API key" };
   }
-  const model = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 
-  for (let i = attempt; i <= maxAttempts; i++) {
+  const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+
+  for (let i = 1; i <= maxAttempts; i++) {
     const controller = new AbortController();
-    const timeoutMs = baseTimeoutMs + (i - 1) * 4000;
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const timeoutId = setTimeout(() => controller.abort(), baseTimeoutMs);
 
     try {
       const r = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -433,89 +417,44 @@ async function callOpenAI(userPrompt, attempt) {
         body: JSON.stringify({
           model,
           messages: [{ role: "user", content: userPrompt }],
-          temperature: Number(
-            process.env.OPENAI_TEMPERATURE || (i === 1 ? 0.25 : 0.15)
-          ),
-          max_tokens: Number(process.env.OPENAI_MAX_OUTPUT_TOKENS || 1600),
+          temperature: 0.2,
+          max_tokens: 1200,
         }),
         signal: controller.signal,
       });
 
-      const contentType = r.headers.get("content-type") || "";
-      const isJson = contentType.includes("application/json");
-
-      if (!isJson) {
-        const text = await r.text();
-        clearTimeout(timeoutId);
-
-        const status = r.status || 502;
-        const errObj = {
-          ok: false,
-          status: isRetryableStatus(status) ? status : 502,
-          error: "Non-JSON response from OpenAI",
-          raw: text?.slice?.(0, 8000) || text,
-        };
-
-        if (i < maxAttempts && isRetryableStatus(status)) {
-          await new Promise((res) => setTimeout(res, 300 * i));
-          continue;
-        }
-
-        return errObj;
-      }
-
-      const data = await r.json();
       clearTimeout(timeoutId);
 
       if (!r.ok) {
-        const status = r.status || 502;
-        const errObj = {
-          ok: false,
-          status,
-          error: data?.error?.message || "OpenAI request failed",
-          raw: { model, attempt: i, data },
-        };
+        const errText = await r.text();
+        console.error(`OpenAI Error (Attempt ${i}):`, errText);
 
-        if (i < maxAttempts && isRetryableStatus(status)) {
-          await new Promise((res) => setTimeout(res, 350 * i));
-          continue;
+        if (i < maxAttempts && r.status >= 500) {
+          continue; // Reîncearcă doar dacă e eroare de server OpenAI
         }
-
-        return errObj;
+        return { ok: false, status: r.status, error: "OpenAI request failed" };
       }
 
+      const data = await r.json();
       const rawText = data?.choices?.[0]?.message?.content || "";
       return { ok: true, status: 200, rawText };
     } catch (err) {
       clearTimeout(timeoutId);
+      console.error(`Fetch Error (Attempt ${i}):`, err);
 
-      const msg = String(err?.message || err);
-      const aborted =
-        msg.toLowerCase().includes("aborted") ||
-        msg.toLowerCase().includes("abort");
-
-      const errObj = {
-        ok: false,
-        status: aborted ? 504 : 502,
-        error: aborted ? "OpenAI timeout" : "OpenAI fetch failed",
-        raw: msg,
-      };
-
-      if (i < maxAttempts) {
-        await new Promise((res) => setTimeout(res, 400 * i));
-        continue;
+      // Dacă e timeout, nu mai încercăm a doua oară că sigur pică iar
+      if (err.name === "AbortError") {
+        return {
+          ok: false,
+          status: 504,
+          error: "OpenAI timeout - generation took too long",
+        };
       }
 
-      return errObj;
+      if (i < maxAttempts) continue;
+      return { ok: false, status: 502, error: "Connection failed" };
     }
   }
-
-  return {
-    ok: false,
-    status: 502,
-    error: "OpenAI request failed",
-    raw: "unknown",
-  };
 }
 
 export async function POST(req) {
