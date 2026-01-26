@@ -564,59 +564,59 @@ export async function POST(req) {
   }
 
   const promptInsights = `
-You are a Senior Football Analyst. Return ONLY a single valid JSON object (no extra text, no explanations, no Markdown).
-
-INPUT:
-Match: ${echipe}
-Competition: ${liga}
-Current status: ${status}
-
-GOAL:
-Provide DATA ONLY for a frontend that renders:
-1) a CSS pie chart (1X2 probabilities)
-2) a CSS "stock-style" form line for each team (using the series)
-3) a detailed English summary under the charts providing a tactical and statistical overview.
-
-CRITICAL RULES:
-- Output MUST be ONLY valid JSON.
-- Probabilities MUST be INTEGERS and MUST sum to exactly 100.
-- Form series values MUST be INTEGERS in range 0..100, minimum 5 points.
-- quickSummary MUST be English, detailed (4–6 concise sentences). It should cover current form, tactical setup, and key statistical factors. Use a neutral, professional tone. No emojis, no marketing language, no betting tips.
-- Do NOT invent sources, quotes, or claims of having access to live databases.
-
-REQUIRED JSON SCHEMA:
-{
-  "probabilities": { "homeWin": number, "draw": number, "awayWin": number },
-  "teamForm": {
-    "home": { "label": string, "series": number[] },
-    "away": { "label": string, "series": number[] }
-  },
-  "illustrations": {
-    "home": {
-      "trend": "up"|"down"|"flat",
-      "volatility": "low"|"medium"|"high",
-      "mood": "confident"|"balanced"|"unstable",
-      "summary": string,
-      "highlights": [{ "label": string, "value": number, "index": number }]
-    } | null,
-    "away": {
-      "trend": "up"|"down"|"flat",
-      "volatility": "low"|"medium"|"high",
-      "mood": "confident"|"balanced"|"unstable",
-      "summary": string,
-      "highlights": [{ "label": string, "value": number, "index": number }]
-    } | null
-  },
-  "quickSummary": string,
-  "confidence": number,
-  "notes": string
-}
-
-NOTES:
-- highlights.index is the position in the series (0-based). Keep highlights to max 4 per team.
-- illustrations.summary can be short (1 sentence) and must be neutral.
-- The quickSummary should now provide a deeper analysis compared to previous versions, integrating team momentum and situational context.
-`;
+  You are a Senior Football Analyst. Return ONLY a single valid JSON object (no extra text, no explanations, no Markdown).
+  
+  INPUT:
+  Match: ${echipe}
+  Competition: ${liga}
+  Current status: ${status}
+  
+  GOAL:
+  Provide DATA ONLY for a frontend that renders:
+  1) a CSS pie chart (1X2 probabilities)
+  2) a CSS "stock-style" form line for each team (using the series)
+  3) a COMPREHENSIVE English summary under the charts providing a deep tactical and statistical overview.
+  
+  CRITICAL RULES:
+  - Output MUST be ONLY valid JSON.
+  - Probabilities MUST be INTEGERS and MUST sum to exactly 100.
+  - Form series values MUST be INTEGERS in range 0..100, minimum 5 points.
+  - quickSummary MUST be English, EXTENSIVE and HIGHLY DETAILED (approx. 8–12 sentences). It should be structured to cover: 1) Current form & momentum trajectory, 2) Tactical matchup & style of play conflicts, 3) Key statistical dominance areas (defense/offense), and 4) Likely game script. Tone must be expert, neutral, and strictly analytical. No emojis, no marketing language, no betting tips.
+  - Do NOT invent sources, quotes, or claims of having access to live databases.
+  
+  REQUIRED JSON SCHEMA:
+  {
+    "probabilities": { "homeWin": number, "draw": number, "awayWin": number },
+    "teamForm": {
+      "home": { "label": string, "series": number[] },
+      "away": { "label": string, "series": number[] }
+    },
+    "illustrations": {
+      "home": {
+        "trend": "up"|"down"|"flat",
+        "volatility": "low"|"medium"|"high",
+        "mood": "confident"|"balanced"|"unstable",
+        "summary": string,
+        "highlights": [{ "label": string, "value": number, "index": number }]
+      } | null,
+      "away": {
+        "trend": "up"|"down"|"flat",
+        "volatility": "low"|"medium"|"high",
+        "mood": "confident"|"balanced"|"unstable",
+        "summary": string,
+        "highlights": [{ "label": string, "value": number, "index": number }]
+      } | null
+    },
+    "quickSummary": string,
+    "confidence": number,
+    "notes": string
+  }
+  
+  NOTES:
+  - highlights.index is the position in the series (0-based). Keep highlights to max 4 per team.
+  - illustrations.summary can be short (1 sentence) and must be neutral.
+  - The quickSummary is the priority: provide a deep-dive analysis suitable for professional bettors or analysts.
+  `;
 
   // MODE: insights (JSON for charts/illustrations)
   if (String(mode || "analysis").toLowerCase() === "insights") {
