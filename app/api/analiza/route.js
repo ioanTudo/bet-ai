@@ -334,8 +334,8 @@ function isValidInsightsPayload(obj) {
   // --- quickSummary (required) ---
   if (typeof obj?.quickSummary !== "string") return false;
   const qs = obj.quickSummary.trim();
-  // keep it short-ish and useful
-  if (qs.length < 20 || qs.length > 420) return false;
+  // allow longer summaries (models often produce 8–12 sentences)
+  if (qs.length < 20 || qs.length > 2000) return false;
 
   const ci = Number(obj?.confidence);
   if (!Number.isFinite(ci) || !Number.isInteger(ci) || ci < 0 || ci > 100)
@@ -581,7 +581,7 @@ export async function POST(req) {
   - Output MUST be ONLY valid JSON.
   - Probabilities MUST be INTEGERS and MUST sum to exactly 100.
   - Form series values MUST be INTEGERS in range 0..100, minimum 5 points.
-  - quickSummary MUST be English, EXTENSIVE and HIGHLY DETAILED (approx. 8–12 sentences). It should be structured to cover: 1) Current form & momentum trajectory, 2) Tactical matchup & style of play conflicts, 3) Key statistical dominance areas (defense/offense), and 4) Likely game script. Tone must be expert, neutral, and strictly analytical. No emojis, no marketing language, no betting tips.
+  - quickSummary MUST be English, detailed and analytical (approx. 4–8 sentences). Keep it within ~2000 characters. It should be structured to cover: 1) Current form & momentum trajectory, 2) Tactical matchup & style of play conflicts, 3) Key statistical dominance areas (defense/offense), and 4) Likely game script. Tone must be expert, neutral, and strictly analytical. No emojis, no marketing language, no betting tips.
   - Do NOT invent sources, quotes, or claims of having access to live databases.
   
   REQUIRED JSON SCHEMA:
