@@ -451,7 +451,7 @@ CRITICAL RULES:
 - Output MUST be ONLY valid JSON.
 - Probabilities MUST be INTEGERS and MUST sum to exactly 100.
 - Form series values MUST be INTEGERS in range 0..100, minimum 5 points.
-- quickSummary MUST be English, concise, and EASY TO SCAN. Format it as 5–7 bullet points, each starting with "- ". Keep each bullet to 1–2 sentences max. Cover: (1) current form & momentum, (2) tactical matchup & style clashes, (3) key statistical edges, (4) likely game script, (5) key risks/uncertainties. Tone must be expert, neutral, strictly analytical. No emojis, no marketing language, no betting tips. Prioritize up-to-date 2025/2026 season framing and keep it concise.
+- quickSummary MUST be English, short, and EASY TO SCAN. Format it as 5–6 bullet points, each on its own line and each starting with "• ". Keep each bullet to ONE short sentence (max ~18 words). No paragraphs, no walls of text. Cover: (1) current form & momentum, (2) tactical matchup, (3) key statistical edge, (4) likely game script, (5) main risk/uncertainty (+ optional 6th: standout player/absence if known). Tone: expert, neutral, strictly analytical. No emojis, no betting tips, no marketing.
 - Do NOT invent sources, quotes, or claims of having access to live databases.
 - Use the MOST CURRENT season context (2025/2026) in your phrasing (form, momentum, tactical trends) and keep any season-specific statements concise.
 - If any specific “current season” detail is uncertain, keep it generic (e.g., "recent matches" / "this season") rather than inventing exact numbers.
@@ -479,7 +479,7 @@ REQUIRED JSON SCHEMA:
       "highlights": [{ "label": string, "value": number, "index": number }]
     } | null
   },
-  "quickSummary": string, // 5–7 bullets, each starts with "- " and uses \n for new lines
+  "quickSummary": string, // 5–6 bullets, each starts with "• " and uses \n for new lines
   "confidence": number,
   "notes": string
 }
