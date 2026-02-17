@@ -440,19 +440,21 @@ INPUT:
 Match: ${echipe}
 Competition: ${liga}
 Current status: ${status}
+Season focus: 2025/2026 (use the most current season context available)
 
 GOAL:
 Provide DATA ONLY for a frontend that renders:
 1) a CSS pie chart (1X2 probabilities)
 2) a CSS "stock-style" form line for each team (using the series)
-3) a COMPREHENSIVE English summary under the charts providing a deep tactical and statistical overview.
-
+3) a SHORT, easy-to-scan English summary under the charts (bulleted, concise, well-formatted).
 CRITICAL RULES:
 - Output MUST be ONLY valid JSON.
 - Probabilities MUST be INTEGERS and MUST sum to exactly 100.
 - Form series values MUST be INTEGERS in range 0..100, minimum 5 points.
-- quickSummary MUST be English, EXTENSIVE and HIGHLY DETAILED (approx. 8–12 sentences). It should be structured to cover: 1) Current form & momentum trajectory, 2) Tactical matchup & style of play conflicts, 3) Key statistical dominance areas (defense/offense), and 4) Likely game script. Tone must be expert, neutral, and strictly analytical. No emojis, no marketing language, no betting tips.
+- quickSummary MUST be English, concise, and EASY TO SCAN. Format it as 5–7 bullet points, each starting with "- ". Keep each bullet to 1–2 sentences max. Cover: (1) current form & momentum, (2) tactical matchup & style clashes, (3) key statistical edges, (4) likely game script, (5) key risks/uncertainties. Tone must be expert, neutral, strictly analytical. No emojis, no marketing language, no betting tips. Prioritize up-to-date 2025/2026 season framing and keep it concise.
 - Do NOT invent sources, quotes, or claims of having access to live databases.
+- Use the MOST CURRENT season context (2025/2026) in your phrasing (form, momentum, tactical trends) and keep any season-specific statements concise.
+- If any specific “current season” detail is uncertain, keep it generic (e.g., "recent matches" / "this season") rather than inventing exact numbers.
 
 REQUIRED JSON SCHEMA:
 {
@@ -477,7 +479,7 @@ REQUIRED JSON SCHEMA:
       "highlights": [{ "label": string, "value": number, "index": number }]
     } | null
   },
-  "quickSummary": string,
+  "quickSummary": string, // 5–7 bullets, each starts with "- " and uses \n for new lines
   "confidence": number,
   "notes": string
 }
@@ -485,7 +487,7 @@ REQUIRED JSON SCHEMA:
 NOTES:
 - highlights.index is the position in the series (0-based). Keep highlights to max 4 per team.
 - illustrations.summary can be short (1 sentence) and must be neutral.
-- The quickSummary is the priority: provide a deep-dive analysis suitable for professional bettors or analysts.
+- quickSummary should be compact and readable (bullets). Avoid long paragraphs.
 `;
 
   // MODE: insights (JSON for charts/illustrations)
