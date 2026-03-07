@@ -33,7 +33,7 @@ function withCors(res) {
   res.headers.set("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.headers.set(
     "Access-Control-Allow-Headers",
-    "Content-Type, Authorization"
+    "Content-Type, Authorization",
   );
   res.headers.set("Access-Control-Allow-Credentials", "true");
   return res;
@@ -157,7 +157,7 @@ function isValidInsightsPayload(obj) {
 
   const okSeries = (arr) =>
     arr.every(
-      (v) => Number.isInteger(Number(v)) && Number(v) >= 0 && Number(v) <= 100
+      (v) => Number.isInteger(Number(v)) && Number(v) >= 0 && Number(v) <= 100,
     );
 
   if (!okSeries(homeSeries) || !okSeries(awaySeries)) return false;
@@ -304,7 +304,7 @@ async function callOpenAI(userPrompt, attempt) {
           model,
           messages: [{ role: "user", content: userPrompt }],
           temperature: Number(
-            process.env.OPENAI_TEMPERATURE || (i === 1 ? 0.25 : 0.15)
+            process.env.OPENAI_TEMPERATURE || (i === 1 ? 0.25 : 0.15),
           ),
           max_tokens: Number(process.env.OPENAI_MAX_OUTPUT_TOKENS || 1600),
         }),
@@ -417,9 +417,9 @@ export async function POST(req) {
 
   // Best-effort cache to avoid repeated calls (improves speed + reduces 502s)
   const cacheKey = `${INSIGHTS_SCHEMA_VERSION}|${String(
-    mode || "analysis"
+    mode || "analysis",
   ).trim()}|${String(echipe).trim()}|${String(liga).trim()}|${String(
-    status || ""
+    status || "",
   ).trim()}`;
   const cached = cacheGet(cacheKey);
   if (cached) {
@@ -427,14 +427,16 @@ export async function POST(req) {
       mode && String(mode).toLowerCase() === "insights"
         ? { ok: true, insights: cached }
         : { ok: true, analysis: cached },
-      { status: 200 }
+      { status: 200 },
     );
     res.headers.set("Cache-Control", "public, max-age=60");
     return withCors(res);
   }
 
   const promptInsights = `
-You are a Senior Football Analyst. Return ONLY a single valid JSON object (no extra text, no explanations, no Markdown).
+You are an Elite Sharp Value Betting Analyst specialized in spotting mispriced markets through xG modeling, BTTS trends, Over/Under leans, game tempo and high-impact player props.
+
+Return ONLY a single valid JSON object (no extra text, no explanations, no Markdown).
 
 INPUT:
 Match: ${echipe}
@@ -443,18 +445,28 @@ Current status: ${status}
 Season focus: 2025/2026 (use the most current season context available)
 
 GOAL:
-Provide DATA ONLY for a frontend that renders:
+Deliver ultra-sharp DATA ONLY for a frontend that renders:
 1) a CSS pie chart (1X2 probabilities)
 2) a CSS "stock-style" form line for each team (using the series)
-3) a SHORT, easy-to-scan English summary under the charts (bulleted, concise, well-formatted).
+3) a SHORT, betting-focused English summary under the charts — optimized for serious value bettors.
+
 CRITICAL RULES:
 - Output MUST be ONLY valid JSON.
-- Probabilities MUST be INTEGERS and MUST sum to exactly 100.
+- Probabilities MUST be sharp, well-calibrated INTEGERS and MUST sum to exactly 100. Base them aggressively on: current form, H2H, home/away xG trends, injuries, motivation, tactical styles, expected goals differential, BTTS probability, over/under lean and recent market mispricings.
 - Form series values MUST be INTEGERS in range 0..100, minimum 5 points.
-- quickSummary MUST be English, short, and EASY TO SCAN. Format it as 5–6 bullet points, each on its own line and each starting with "• ". Keep each bullet to ONE short sentence (max ~18 words). No paragraphs, no walls of text. Cover: (1) current form & momentum, (2) tactical matchup, (3) key statistical edge, (4) likely game script, (5) main risk/uncertainty (+ optional 6th: standout player/absence if known). Tone: expert, neutral, strictly analytical. No emojis, no betting tips, no marketing.
-- Do NOT invent sources, quotes, or claims of having access to live databases.
-- Use the MOST CURRENT season context (2025/2026) in your phrasing (form, momentum, tactical trends) and keep any season-specific statements concise.
-- If any specific “current season” detail is uncertain, keep it generic (e.g., "recent matches" / "this season") rather than inventing exact numbers.
+- quickSummary MUST be English, extremely sharp and betting-relevant. Format it as exactly 5–6 bullet points, each on its own line starting with "• ". Keep each bullet to ONE short sentence (max ~18 words). Use \\n for new lines. 
+  Cover exactly: 
+  (1) current form & momentum, 
+  (2) tactical matchup & expected game flow (tempo & scoring style), 
+  (3) strongest statistical edge (xG / BTTS / Over/Under lean), 
+  (4) most likely game script, 
+  (5) biggest risk or value mispricing angle, 
+  (6) key player prop impact or critical absence.
+  Tone: cold, expert, strictly analytical. No emojis, no direct betting tips, no marketing.
+- Think step-by-step about REAL betting edges: expected goals differential, BTTS probability, over 2.5 / under 2.5 lean, game tempo (high/low scoring), set-piece danger and standout player influence on props (anytime goal, shots, assists).
+- Do NOT invent sources or live data access.
+- Use the MOST CURRENT season context (2025/2026) in your phrasing. If uncertain, stay generic.
+- Force high-precision calibration for value.
 
 REQUIRED JSON SCHEMA:
 {
@@ -479,15 +491,15 @@ REQUIRED JSON SCHEMA:
       "highlights": [{ "label": string, "value": number, "index": number }]
     } | null
   },
-  "quickSummary": string, // 5–6 bullets, each starts with "• " and uses \n for new lines
+  "quickSummary": string, // 5–6 bullets, each starts with "• " and uses \\n for new lines
   "confidence": number,
   "notes": string
 }
 
 NOTES:
-- highlights.index is the position in the series (0-based). Keep highlights to max 4 per team.
+- highlights.index is the position in the series (0-based). Keep highlights to max 4 per team and make them betting-relevant (attacking output, defensive solidity, goal threat, set-piece involvement).
 - illustrations.summary can be short (1 sentence) and must be neutral.
-- quickSummary should be compact and readable (bullets). Avoid long paragraphs.
+- quickSummary must be compact, scannable and loaded with sharp betting angles.
 `;
 
   // MODE: insights (JSON for charts/illustrations)
@@ -505,7 +517,7 @@ NOTES:
           upstream_status: resp.status || 502,
           upstream_error: resp.error,
         },
-        resp.status || 502
+        resp.status || 502,
       );
     }
 
@@ -530,7 +542,7 @@ NOTES:
             upstream_status: resp2.status || 502,
             upstream_error: resp2.error,
           },
-          resp2.status || 502
+          resp2.status || 502,
         );
       }
       const raw2 = String(resp2.rawText || "").trim();
@@ -658,7 +670,7 @@ Analiza este generată automat pe baza datelor disponibile și are scop exclusiv
           upstream_status: resp1.status || 502,
           upstream_error: resp1.error,
         },
-        resp1.status || 502
+        resp1.status || 502,
       );
     }
 
@@ -679,7 +691,7 @@ Analiza este generată automat pe baza datelor disponibile și are scop exclusiv
             upstream_status: resp2.status || 502,
             upstream_error: resp2.error,
           },
-          resp2.status || 502
+          resp2.status || 502,
         );
       }
 
@@ -721,7 +733,7 @@ Analiza este generată automat pe baza datelor disponibile și are scop exclusiv
           // Avoid duplicating sections by trimming possible repeated prefix
           const contTrimmed = cont.replace(
             /^\s*1\)\s+[\s\S]*?(?=(\n\s*4\)|\n\s*5\)|$))/m,
-            (m) => m
+            (m) => m,
           );
           const merged = `${analysis}\n\n${contTrimmed}`.trim();
           // Keep the merged output only if it now looks complete
