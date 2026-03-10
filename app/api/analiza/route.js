@@ -4,7 +4,7 @@ const INTERNAL_KEY = process.env.BETLOGIC_INTERNAL_KEY;
 const FOOTBALL_DATA_KEY = process.env.FOOTBALL_DATA_API_KEY;
 const FOOTBALL_DATA_BASE = "https://api.football-data.org/v4";
 // Bump this when you change the insights schema/prompt so cached payloads don't keep old shapes.
-const INSIGHTS_SCHEMA_VERSION = "2026-01-26-v3";
+const INSIGHTS_SCHEMA_VERSION = "2026-03-10-v5";
 
 // Simple in-memory cache (best-effort). Helps performance and reduces 502s from upstream.
 // Note: Vercel/serverless may evict between invocations; still useful under load.
@@ -262,6 +262,396 @@ function hasAllMainSections(text) {
   );
 }
 
+function toFiniteNumber(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function clampNumber(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizeProbabilityTriple(home, draw, away) {
+  const raw = [
+    clampNumber(toFiniteNumber(home, 0), 0, 100),
+    clampNumber(toFiniteNumber(draw, 0), 0, 100),
+    clampNumber(toFiniteNumber(away, 0), 0, 100),
+  ];
+  const sum = raw[0] + raw[1] + raw[2];
+  if (sum <= 0) {
+    return { homeWin: 34, draw: 28, awayWin: 38 };
+  }
+
+  const scaled = raw.map((v) => (v / sum) * 100);
+  const floored = scaled.map((v) => Math.floor(v));
+  let remainder = 100 - floored.reduce((acc, v) => acc + v, 0);
+
+  const order = scaled
+    .map((v, idx) => ({ idx, frac: v - Math.floor(v) }))
+    .sort((a, b) => b.frac - a.frac);
+
+  for (let i = 0; i < order.length && remainder > 0; i += 1) {
+    floored[order[i].idx] += 1;
+    remainder -= 1;
+  }
+
+  return {
+    homeWin: floored[0],
+    draw: floored[1],
+    awayWin: floored[2],
+  };
+}
+
+function oddsToImpliedProbabilities(odds) {
+  const home = toFiniteNumber(odds?.home, 0);
+  const draw = toFiniteNumber(odds?.draw, 0);
+  const away = toFiniteNumber(odds?.away, 0);
+  if (!(home > 1.01) || !(away > 1.01)) return null;
+
+  const invHome = 1 / home;
+  const invDraw = draw > 1.01 ? 1 / draw : 0;
+  const invAway = 1 / away;
+  return normalizeProbabilityTriple(
+    invHome * 100,
+    invDraw * 100,
+    invAway * 100,
+  );
+}
+
+function inferTipLean(market, teams) {
+  const m = String(market || "")
+    .trim()
+    .toLowerCase();
+  if (!m) return "";
+
+  const home = String(teams?.home || "")
+    .trim()
+    .toLowerCase();
+  const away = String(teams?.away || "")
+    .trim()
+    .toLowerCase();
+
+  if (/^1x\b/.test(m) || m.includes("home or draw")) return "home";
+  if (/^x2\b/.test(m) || m.includes("away or draw")) return "away";
+  if (m === "draw") return "draw";
+  if (m.includes(" no draw")) return "";
+  if (m.includes("btts") || m.includes("over ") || m.includes("under "))
+    return "";
+  if (home && m.includes(home) && m.includes("win")) return "home";
+  if (away && m.includes(away) && m.includes("win")) return "away";
+  return "";
+}
+
+function buildAnchorFromTipsContext(ctx) {
+  if (!ctx || typeof ctx !== "object") return null;
+
+  const teams = {
+    home: String(ctx?.teams?.home || "Home").trim() || "Home",
+    away: String(ctx?.teams?.away || "Away").trim() || "Away",
+  };
+
+  const prior = normalizeProbabilityTriple(
+    ctx?.probabilities?.home_win,
+    ctx?.probabilities?.draw,
+    ctx?.probabilities?.away_win,
+  );
+
+  const xg = {
+    home: clampNumber(toFiniteNumber(ctx?.xg?.home, 0), 0, 6),
+    away: clampNumber(toFiniteNumber(ctx?.xg?.away, 0), 0, 6),
+    total: clampNumber(toFiniteNumber(ctx?.xg?.total, 0), 0, 10),
+  };
+  if (xg.total <= 0 && (xg.home > 0 || xg.away > 0)) {
+    xg.total = xg.home + xg.away;
+  }
+
+  const form = {
+    home_ppg: clampNumber(toFiniteNumber(ctx?.form?.home_ppg, 0), 0, 3.5),
+    away_ppg: clampNumber(toFiniteNumber(ctx?.form?.away_ppg, 0), 0, 3.5),
+    home_last5_points: clampNumber(
+      toFiniteNumber(ctx?.form?.home_last5_points, 0),
+      0,
+      15,
+    ),
+    away_last5_points: clampNumber(
+      toFiniteNumber(ctx?.form?.away_last5_points, 0),
+      0,
+      15,
+    ),
+    home_form: String(ctx?.form?.home_form || "").trim(),
+    away_form: String(ctx?.form?.away_form || "").trim(),
+  };
+
+  const h2h = {
+    sample: clampNumber(toFiniteNumber(ctx?.h2h?.sample, 0), 0, 10),
+    home_wins: clampNumber(toFiniteNumber(ctx?.h2h?.home_wins, 0), 0, 10),
+    away_wins: clampNumber(toFiniteNumber(ctx?.h2h?.away_wins, 0), 0, 10),
+    draws: clampNumber(toFiniteNumber(ctx?.h2h?.draws, 0), 0, 10),
+    last_winner: String(ctx?.h2h?.last_winner || "")
+      .trim()
+      .toLowerCase(),
+    last_score: String(ctx?.h2h?.last_score || "").trim(),
+  };
+
+  const sampleGames = clampNumber(
+    toFiniteNumber(ctx?.sample_games_per_team, 0),
+    0,
+    20,
+  );
+  const topTips = Array.isArray(ctx?.top_tips) ? ctx.top_tips : [];
+  const marketOdds = oddsToImpliedProbabilities(ctx?.market_odds || null);
+
+  let home = prior.homeWin;
+  let draw = prior.draw;
+  let away = prior.awayWin;
+
+  const xgDiff = xg.home - xg.away;
+  const ppgDiff = form.home_ppg - form.away_ppg;
+  const last5Diff = (form.home_last5_points - form.away_last5_points) / 3;
+
+  home += clampNumber(xgDiff * 6.5, -6, 6);
+  away -= clampNumber(xgDiff * 6.5, -6, 6);
+
+  home += clampNumber(ppgDiff * 4.5, -5, 5);
+  away -= clampNumber(ppgDiff * 4.5, -5, 5);
+
+  home += clampNumber(last5Diff * 2.2, -3.5, 3.5);
+  away -= clampNumber(last5Diff * 2.2, -3.5, 3.5);
+
+  if (xg.total <= 2.15) draw += 3.5;
+  else if (xg.total >= 3.15) draw -= 3;
+
+  if (h2h.sample > 0) {
+    const h2hDiff = (h2h.home_wins - h2h.away_wins) / h2h.sample;
+    home += clampNumber(h2hDiff * 4.2, -3.5, 3.5);
+    away -= clampNumber(h2hDiff * 4.2, -3.5, 3.5);
+    if (h2h.last_winner === "home") home += 1.2;
+    if (h2h.last_winner === "away") away += 1.2;
+  }
+
+  const consensus = { home: 0, away: 0, draw: 0 };
+  for (const tip of topTips.slice(0, 3)) {
+    const lean = inferTipLean(tip?.market, teams);
+    const tipProb = clampNumber(toFiniteNumber(tip?.probability, 0), 0, 100);
+    const edge = clampNumber(toFiniteNumber(tip?.edge_pp, 0), -30, 30);
+    const strength =
+      clampNumber((tipProb - 50) * 0.05, 0, 2.8) +
+      clampNumber(Math.abs(edge) * 0.06, 0, 2.2);
+
+    if (lean === "home") {
+      home += strength;
+      consensus.home += 1;
+    } else if (lean === "away") {
+      away += strength;
+      consensus.away += 1;
+    } else if (lean === "draw") {
+      draw += Math.min(2.6, strength || 1.2);
+      consensus.draw += 1;
+    }
+  }
+
+  let probabilities = normalizeProbabilityTriple(home, draw, away);
+
+  if (marketOdds) {
+    probabilities = normalizeProbabilityTriple(
+      probabilities.homeWin * 0.84 + marketOdds.homeWin * 0.16,
+      probabilities.draw * 0.84 + marketOdds.draw * 0.16,
+      probabilities.awayWin * 0.84 + marketOdds.awayWin * 0.16,
+    );
+  }
+
+  const awayStructuralEdge =
+    xgDiff <= -0.25 ||
+    ppgDiff <= -0.32 ||
+    form.away_last5_points >= form.home_last5_points + 3;
+  const homeStructuralEdge =
+    xgDiff >= 0.25 ||
+    ppgDiff >= 0.32 ||
+    form.home_last5_points >= form.away_last5_points + 3;
+
+  if (
+    awayStructuralEdge &&
+    prior.awayWin >= prior.homeWin &&
+    probabilities.homeWin >= probabilities.awayWin
+  ) {
+    const shift = Math.min(
+      6,
+      probabilities.homeWin - probabilities.awayWin + 1,
+    );
+    probabilities = normalizeProbabilityTriple(
+      probabilities.homeWin - shift,
+      probabilities.draw,
+      probabilities.awayWin + shift,
+    );
+  }
+
+  if (
+    homeStructuralEdge &&
+    prior.homeWin >= prior.awayWin &&
+    probabilities.awayWin >= probabilities.homeWin
+  ) {
+    const shift = Math.min(
+      6,
+      probabilities.awayWin - probabilities.homeWin + 1,
+    );
+    probabilities = normalizeProbabilityTriple(
+      probabilities.homeWin + shift,
+      probabilities.draw,
+      probabilities.awayWin - shift,
+    );
+  }
+
+  const lean =
+    probabilities.homeWin >= probabilities.awayWin + 2
+      ? "home"
+      : probabilities.awayWin >= probabilities.homeWin + 2
+        ? "away"
+        : "draw";
+
+  const tipConsensus = Math.max(consensus.home, consensus.away, consensus.draw);
+  let confidence =
+    46 +
+    Math.abs(probabilities.homeWin - probabilities.awayWin) * 0.58 +
+    Math.abs(xgDiff) * 11 +
+    Math.min(sampleGames, 10) * 1.2 +
+    tipConsensus * 3.2;
+
+  if (h2h.sample > 0) confidence += Math.min(h2h.sample, 5) * 0.8;
+  if (marketOdds) confidence += 3;
+  confidence = Math.round(clampNumber(confidence, 48, 91));
+
+  return {
+    teams,
+    probabilities,
+    xg,
+    form,
+    h2h,
+    sampleGames,
+    marketOdds,
+    lean,
+    confidence,
+  };
+}
+
+function buildPromptContextBlock(extra, anchor) {
+  const lines = [];
+  if (anchor) {
+    lines.push("QUANT MODEL ANCHOR:");
+    lines.push(
+      `- Prior 1X2 probabilities: Home ${anchor.probabilities.homeWin} / Draw ${anchor.probabilities.draw} / Away ${anchor.probabilities.awayWin}.`,
+    );
+    lines.push(
+      `- xG anchor: ${anchor.teams.home} ${anchor.xg.home.toFixed(2)} vs ${anchor.teams.away} ${anchor.xg.away.toFixed(2)} (total ${anchor.xg.total.toFixed(2)}).`,
+    );
+    lines.push(
+      `- Form anchor: home ${anchor.form.home_ppg.toFixed(2)} PPG / ${anchor.form.home_form || "-"} vs away ${anchor.form.away_ppg.toFixed(2)} PPG / ${anchor.form.away_form || "-"}.`,
+    );
+    if (anchor.h2h.sample > 0) {
+      lines.push(
+        `- H2H anchor: home ${anchor.h2h.home_wins}, away ${anchor.h2h.away_wins}, draws ${anchor.h2h.draws} from last ${anchor.h2h.sample}.`,
+      );
+    }
+    if (anchor.marketOdds) {
+      lines.push(
+        `- Market sanity check: Home ${anchor.marketOdds.homeWin} / Draw ${anchor.marketOdds.draw} / Away ${anchor.marketOdds.awayWin}.`,
+      );
+    }
+    lines.push(
+      "- Home advantage is allowed only as a SMALL nudge. Venue alone must never flip the stronger side.",
+    );
+    lines.push(
+      "- If the away team has the better xG prior, better PPG and the prior model already leans away, keep away ahead unless hard evidence contradicts it.",
+    );
+    lines.push(
+      "- H2H is secondary evidence. It can refine, but it must not override stronger current-form and xG signals by itself.",
+    );
+  }
+
+  const extraText = String(extra || "").trim();
+  if (extraText) {
+    lines.push("ADDITIONAL STRUCTURED CONTEXT:");
+    lines.push(extraText);
+  }
+
+  return lines.length ? `\n${lines.join("\n")}\n` : "";
+}
+
+function blendInsightsWithAnchor(insights, anchor) {
+  if (!insights || !anchor || !insights.probabilities) return insights;
+
+  const aiProb = normalizeProbabilityTriple(
+    insights.probabilities.homeWin ?? insights.probabilities.home,
+    insights.probabilities.draw,
+    insights.probabilities.awayWin ?? insights.probabilities.away,
+  );
+
+  const prior = anchor.probabilities;
+  const aiLean =
+    aiProb.homeWin >= aiProb.awayWin + 2
+      ? "home"
+      : aiProb.awayWin >= aiProb.homeWin + 2
+        ? "away"
+        : "draw";
+  const priorWeight = aiLean && aiLean !== anchor.lean ? 0.8 : 0.7;
+
+  let merged = normalizeProbabilityTriple(
+    prior.homeWin * priorWeight + aiProb.homeWin * (1 - priorWeight),
+    prior.draw * priorWeight + aiProb.draw * (1 - priorWeight),
+    prior.awayWin * priorWeight + aiProb.awayWin * (1 - priorWeight),
+  );
+
+  if (
+    anchor.lean === "away" &&
+    prior.awayWin >= prior.homeWin &&
+    merged.homeWin >= merged.awayWin
+  ) {
+    const shift = Math.min(6, merged.homeWin - merged.awayWin + 1);
+    merged = normalizeProbabilityTriple(
+      merged.homeWin - shift,
+      merged.draw,
+      merged.awayWin + shift,
+    );
+  }
+
+  if (
+    anchor.lean === "home" &&
+    prior.homeWin >= prior.awayWin &&
+    merged.awayWin >= merged.homeWin
+  ) {
+    const shift = Math.min(6, merged.awayWin - merged.homeWin + 1);
+    merged = normalizeProbabilityTriple(
+      merged.homeWin + shift,
+      merged.draw,
+      merged.awayWin - shift,
+    );
+  }
+
+  insights.probabilities = {
+    ...insights.probabilities,
+    homeWin: merged.homeWin,
+    draw: merged.draw,
+    awayWin: merged.awayWin,
+  };
+
+  const currentConfidence = clampNumber(
+    toFiniteNumber(insights.confidence, anchor.confidence),
+    0,
+    100,
+  );
+  insights.confidence = Math.round(
+    clampNumber(anchor.confidence * 0.72 + currentConfidence * 0.28, 0, 100),
+  );
+
+  const anchorNote = `Model anchor kept 1X2 close to ${anchor.teams.home} ${merged.homeWin}% / Draw ${merged.draw}% / ${anchor.teams.away} ${merged.awayWin}% with capped venue bias.`;
+  const existingNotes =
+    typeof insights.notes === "string" ? insights.notes.trim() : "";
+  insights.notes = existingNotes
+    ? `${anchorNote} ${existingNotes}`.trim()
+    : anchorNote;
+
+  return insights;
+}
+
 async function callOpenAI(userPrompt, attempt) {
   // Direct OpenAI call (Chat Completions). Retries on transient errors/timeouts.
   const maxAttempts = 3;
@@ -409,18 +799,42 @@ export async function POST(req) {
     return okJson({ error: "Invalid JSON body", reason: "invalid_json" });
   }
 
-  const { echipe, liga, status, mode } = body;
+  const echipe = typeof body?.echipe === "string" ? body.echipe.trim() : "";
+  const liga = typeof body?.liga === "string" ? body.liga.trim() : "";
+  const status = typeof body?.status === "string" ? body.status.trim() : "";
+  const mode = typeof body?.mode === "string" ? body.mode.trim() : "";
+  const extra = typeof body?.extra === "string" ? body.extra.trim() : "";
+  const tipsContext =
+    body?.tips_context && typeof body.tips_context === "object"
+      ? body.tips_context
+      : {};
+  const postId = Math.max(0, parseInt(body?.post_id, 10) || 0);
+  const matchId = Math.max(0, parseInt(body?.match_id, 10) || 0);
 
   if (!echipe || !liga) {
     return okJson({ error: "Date incomplete", reason: "missing_fields" });
   }
+
+  let contextSignature = "";
+  try {
+    contextSignature = JSON.stringify({
+      extra,
+      tipsContext,
+      postId,
+      matchId,
+    });
+  } catch {
+    contextSignature = `${extra}|${postId}|${matchId}`;
+  }
+  const modelAnchor = buildAnchorFromTipsContext(tipsContext);
+  const promptContextBlock = buildPromptContextBlock(extra, modelAnchor);
 
   // Best-effort cache to avoid repeated calls (improves speed + reduces 502s)
   const cacheKey = `${INSIGHTS_SCHEMA_VERSION}|${String(
     mode || "analysis",
   ).trim()}|${String(echipe).trim()}|${String(liga).trim()}|${String(
     status || "",
-  ).trim()}`;
+  ).trim()}|${contextSignature}`;
   const cached = cacheGet(cacheKey);
   if (cached) {
     const res = NextResponse.json(
@@ -443,6 +857,7 @@ Match: ${echipe}
 Competition: ${liga}
 Current status: ${status}
 Season focus: 2025/2026 (use the most current season context available)
+${promptContextBlock}
 
 GOAL:
 Deliver ultra-sharp DATA ONLY for a frontend that renders:
@@ -452,7 +867,12 @@ Deliver ultra-sharp DATA ONLY for a frontend that renders:
 
 CRITICAL RULES:
 - Output MUST be ONLY valid JSON.
-- Probabilities MUST be sharp, well-calibrated INTEGERS and MUST sum to exactly 100. Base them aggressively on: current form, H2H, home/away xG trends, injuries, motivation, tactical styles, expected goals differential, BTTS probability, over/under lean and recent market mispricings.
+- Probabilities MUST be sharp, well-calibrated INTEGERS and MUST sum to exactly 100.
+- Treat the QUANT MODEL ANCHOR above as the hard prior. Do not drift far from it unless the structured context clearly justifies that shift.
+- Home advantage is a small adjustment only. It MUST NOT become the main reason to flip a stronger away side.
+- If away xG, away form and the anchor prior all lean away, keep the away side ahead unless there is explicit contrary evidence in the provided context.
+- H2H is secondary and recent form/xG are primary. Never let one old H2H result dominate the estimate.
+- Base the final numbers on: current form, H2H, home/away xG trends, injuries, motivation, tactical styles, expected goals differential, BTTS probability, over/under lean and recent market mispricings.
 - Form series values MUST be INTEGERS in range 0..100, minimum 5 points.
 - quickSummary MUST be English, extremely sharp and betting-relevant. Format it as exactly 5–6 bullet points, each on its own line starting with "• ". Keep each bullet to ONE short sentence (max ~18 words). Use \\n for new lines. 
   Cover exactly: 
@@ -500,6 +920,7 @@ NOTES:
 - highlights.index is the position in the series (0-based). Keep highlights to max 4 per team and make them betting-relevant (attacking output, defensive solidity, goal threat, set-piece involvement).
 - illustrations.summary can be short (1 sentence) and must be neutral.
 - quickSummary must be compact, scannable and loaded with sharp betting angles.
+- notes should briefly explain the strongest quantified edge and mention when venue bias was capped.
 `;
 
   // MODE: insights (JSON for charts/illustrations)
@@ -568,6 +989,8 @@ NOTES:
       });
     }
 
+    insights = blendInsightsWithAnchor(insights, modelAnchor);
+
     // Normalize naming to be frontend-friendly (aliases + legacy keys used by older UI)
     try {
       // ---- probabilities aliases ----
@@ -625,10 +1048,18 @@ DATE DE INTRARE:
 Meci: ${echipe}
 Liga: ${liga}
 Status curent: ${status}
+${promptContextBlock}
 
 OBIECTIVUL ANALIZEI:
 Oferă o evaluare obiectivă a contextului sportiv și a dinamicii meciului, evidențiind factori relevanți și riscuri competitive.
 Analiza are scop STRICT INFORMATIV și nu reprezintă o recomandare de pariere.
+
+REGULI METODOLOGICE OBLIGATORII:
+- Folosește ancora cantitativă de mai sus ca prior principal pentru forța relativă a echipelor.
+- Nu supraevalua avantajul terenului propriu; tratează-l doar ca ajustare minoră.
+- Dacă semnalele combinate xG + formă + model prior favorizează echipa din deplasare, explică de ce, fără a inversa concluzia doar din cauza terenului.
+- H2H are rol secundar și trebuie folosit doar ca rafinare, nu ca argument dominant împotriva semnalelor actuale.
+- Când există conflict între semnale, prioritizează în această ordine: xG și probabilități model, formă recentă, context lot, apoi H2H și factor teren.
 
 STRUCTURA ANALIZEI:
 
