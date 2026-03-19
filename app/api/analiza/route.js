@@ -1,8 +1,6 @@
 import { NextResponse } from "next/server";
 
 const INTERNAL_KEY = process.env.BETLOGIC_INTERNAL_KEY;
-const FOOTBALL_DATA_KEY = process.env.FOOTBALL_DATA_API_KEY;
-const FOOTBALL_DATA_BASE = "https://api.football-data.org/v4";
 // Bump this when you change the insights schema/prompt so cached payloads don't keep old shapes.
 const INSIGHTS_SCHEMA_VERSION = "2026-03-10-v5";
 
