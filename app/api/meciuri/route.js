@@ -6,7 +6,7 @@ function withCors(res) {
   res.headers.set("Access-Control-Allow-Methods", "GET, OPTIONS");
   res.headers.set(
     "Access-Control-Allow-Headers",
-    "Content-Type, Authorization"
+    "Content-Type, Authorization",
   );
   return res;
 }
@@ -15,14 +15,44 @@ function safeStr(v) {
   return typeof v === "string" ? v : v == null ? "" : String(v);
 }
 
+const WOMENS_PATTERNS = [
+  /\(\s*w\s*\)/i,
+  /\(\s*women\s*\)/i,
+  /\(\s*f\s*\)/i,
+  /\bwomen\b/i,
+  /\bwomens\b/i,
+  /\bwomen['']s\b/i,
+  /\bladies\b/i,
+  /\bfemale\b/i,
+  /\bfeminin/i,
+  /\bfemmin/i,
+  /\bfemen/i,
+  /\bfrauen\b/i,
+  /\bdamen\b/i,
+  /\bvrouwen\b/i,
+  /\bnwsl\b/i,
+  /\bfawsl\b/i,
+  /\buwcl\b/i,
+  /\bd1\s+arkema\b/i,
+  /\bdamallsvenskan\b/i,
+  /\bliga\s+f\b/i,
+  /\bliga\s+mx\s+femenil\b/i,
+];
+
+function isWomensContext(league, home, away) {
+  const blob = [league, home, away].filter(Boolean).join(" ");
+  if (!blob) return false;
+  return WOMENS_PATTERNS.some((re) => re.test(blob));
+}
+
 export async function GET(req) {
   if (!process.env.APISPORTS_KEY) {
     console.error("Missing APISPORTS_KEY in environment variables.");
     return withCors(
       NextResponse.json(
         { error: "Missing APISPORTS_KEY", fixtures: [] },
-        { status: 500 }
-      )
+        { status: 500 },
+      ),
     );
   }
 
@@ -36,14 +66,14 @@ export async function GET(req) {
   try {
     const res = await fetch(
       `https://v3.football.api-sports.io/fixtures?date=${encodeURIComponent(
-        date
+        date,
       )}`,
       {
         headers: {
           "x-apisports-key": process.env.APISPORTS_KEY,
         },
         cache: "no-store",
-      }
+      },
     );
 
     const data = await res.json().catch(() => null);
@@ -51,41 +81,45 @@ export async function GET(req) {
     if (!res.ok) {
       console.error("API-Football error:", res.status, data);
       return withCors(
-        NextResponse.json({ date, fixtures: [] }, { status: 200 })
+        NextResponse.json({ date, fixtures: [] }, { status: 200 }),
       );
     }
 
     const fixtures =
-      data?.response?.map((fx) => {
-        const home = fx?.teams?.home || {};
-        const away = fx?.teams?.away || {};
-        const league = fx?.league || {};
-        const fixture = fx?.fixture || {};
+      data?.response
+        ?.map((fx) => {
+          const home = fx?.teams?.home || {};
+          const away = fx?.teams?.away || {};
+          const league = fx?.league || {};
+          const fixture = fx?.fixture || {};
 
-        return {
-          match_id: fixture?.id ?? null,
-          kickoff: fixture?.date ?? null,
-          status_raw: fixture?.status?.short ?? "",
+          return {
+            match_id: fixture?.id ?? null,
+            kickoff: fixture?.date ?? null,
+            status_raw: fixture?.status?.short ?? "",
 
-          league_id: league?.id ?? null,
-          league: safeStr(league?.name),
-          country: safeStr(league?.country),
-          league_logo: safeStr(league?.logo),
+            league_id: league?.id ?? null,
+            league: safeStr(league?.name),
+            country: safeStr(league?.country),
+            league_logo: safeStr(league?.logo),
 
-          home_id: home?.id ?? null,
-          home_team: safeStr(home?.name),
-          home_logo: safeStr(home?.logo),
+            home_id: home?.id ?? null,
+            home_team: safeStr(home?.name),
+            home_logo: safeStr(home?.logo),
 
-          away_id: away?.id ?? null,
-          away_team: safeStr(away?.name),
-          away_logo: safeStr(away?.logo),
+            away_id: away?.id ?? null,
+            away_team: safeStr(away?.name),
+            away_logo: safeStr(away?.logo),
 
-          stadium: safeStr(fixture?.venue?.name),
-        };
-      }) || [];
+            stadium: safeStr(fixture?.venue?.name),
+          };
+        })
+        .filter(
+          (fx) => !isWomensContext(fx.league, fx.home_team, fx.away_team),
+        ) || [];
 
     return withCors(
-      NextResponse.json({ date, count: fixtures.length, fixtures })
+      NextResponse.json({ date, count: fixtures.length, fixtures }),
     );
   } catch (err) {
     console.error("Server error in /api/meciuri:", err);

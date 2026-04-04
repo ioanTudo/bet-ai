@@ -1,15 +1,53 @@
 import { NextResponse } from "next/server";
 
+// ── Env validation (fail-fast at cold start, not at first request) ──
+const REQUIRED_ENV = ["OPENAI_API_KEY"];
+for (const key of REQUIRED_ENV) {
+  if (!process.env[key]) {
+    console.error(`[BetLogic] FATAL: Missing required env var ${key}`);
+  }
+}
+
 const INTERNAL_KEY = process.env.BETLOGIC_INTERNAL_KEY;
 // Bump this when you change the insights schema/prompt so cached payloads don't keep old shapes.
 const INSIGHTS_SCHEMA_VERSION = "2026-03-10-v5";
 
+// Max request body size (bytes) to prevent abuse
+const MAX_BODY_SIZE = 64 * 1024; // 64 KB
+
 // Simple in-memory cache (best-effort). Helps performance and reduces 502s from upstream.
 // Note: Vercel/serverless may evict between invocations; still useful under load.
 const ANALYSIS_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const CACHE_MAX_ENTRIES = 200; // LRU eviction cap to prevent memory leaks
 const __cache =
   globalThis.__betlogicAnalysisCache ||
   (globalThis.__betlogicAnalysisCache = new Map());
+
+// Best-effort per-IP rate limiter (globalThis persists across warm invocations)
+const RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+const RATE_LIMIT_MAX_HITS = 30;
+const __rateLimiter =
+  globalThis.__betlogicRateLimiter ||
+  (globalThis.__betlogicRateLimiter = new Map());
+
+function rateLimitOk(ip) {
+  if (!ip) return true; // fail-open if no IP
+  const now = Date.now();
+  const entry = __rateLimiter.get(ip);
+  if (!entry || now - entry.start > RATE_LIMIT_WINDOW_MS) {
+    __rateLimiter.set(ip, { count: 1, start: now });
+    // Evict old entries periodically
+    if (__rateLimiter.size > 500) {
+      for (const [k, v] of __rateLimiter) {
+        if (now - v.start > RATE_LIMIT_WINDOW_MS) __rateLimiter.delete(k);
+      }
+    }
+    return true;
+  }
+  if (entry.count >= RATE_LIMIT_MAX_HITS) return false;
+  entry.count++;
+  return true;
+}
 
 function cacheGet(key) {
   const hit = __cache.get(key);
@@ -22,6 +60,11 @@ function cacheGet(key) {
 }
 
 function cacheSet(key, value, ttlMs = ANALYSIS_TTL_MS) {
+  // LRU eviction: if cache is full, delete the oldest entry
+  if (__cache.size >= CACHE_MAX_ENTRIES) {
+    const oldest = __cache.keys().next().value;
+    if (oldest !== undefined) __cache.delete(oldest);
+  }
   __cache.set(key, { value, expiresAt: Date.now() + ttlMs });
 }
 
@@ -101,10 +144,25 @@ function extractFirstJsonObject(raw) {
   const s = String(raw || "").trim();
   const start = s.indexOf("{");
   if (start === -1) return null;
-  // Find a matching closing brace using a simple brace counter
+  // Find a matching closing brace, tracking string literals to avoid false matches
   let depth = 0;
+  let inString = false;
+  let escape = false;
   for (let i = start; i < s.length; i++) {
     const ch = s[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (ch === "\\") {
+      if (inString) escape = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
     if (ch === "{") depth++;
     else if (ch === "}") {
       depth--;
@@ -650,8 +708,11 @@ function blendInsightsWithAnchor(insights, anchor) {
   return insights;
 }
 
-async function callOpenAI(userPrompt, attempt) {
+async function callOpenAI(systemPrompt, userPrompt, attempt, reqSignal) {
   // Direct OpenAI call (Chat Completions). Retries on transient errors/timeouts.
+  // systemPrompt: stable instructions (enables OpenAI prefix caching)
+  // userPrompt:   per-request dynamic content
+  // reqSignal:    optional AbortSignal from the incoming request
   const maxAttempts = 3;
   const baseTimeoutMs = Number(process.env.OPENAI_TIMEOUT_MS || 35000);
 
@@ -681,6 +742,18 @@ async function callOpenAI(userPrompt, attempt) {
     const timeoutMs = baseTimeoutMs + (i - 1) * 4000;
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
+    // Forward client abort to cancel upstream OpenAI call
+    const onClientAbort = () => controller.abort();
+    if (reqSignal && !reqSignal.aborted) {
+      reqSignal.addEventListener("abort", onClientAbort, { once: true });
+    }
+
+    const messages = [];
+    if (systemPrompt) {
+      messages.push({ role: "system", content: systemPrompt });
+    }
+    messages.push({ role: "user", content: userPrompt });
+
     try {
       const r = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
@@ -690,7 +763,7 @@ async function callOpenAI(userPrompt, attempt) {
         },
         body: JSON.stringify({
           model,
-          messages: [{ role: "user", content: userPrompt }],
+          messages,
           temperature: Number(
             process.env.OPENAI_TEMPERATURE || (i === 1 ? 0.25 : 0.15),
           ),
@@ -705,6 +778,7 @@ async function callOpenAI(userPrompt, attempt) {
       if (!isJson) {
         const text = await r.text();
         clearTimeout(timeoutId);
+        if (reqSignal) reqSignal.removeEventListener("abort", onClientAbort);
 
         const status = r.status || 502;
         const errObj = {
@@ -724,6 +798,7 @@ async function callOpenAI(userPrompt, attempt) {
 
       const data = await r.json();
       clearTimeout(timeoutId);
+      if (reqSignal) reqSignal.removeEventListener("abort", onClientAbort);
 
       if (!r.ok) {
         const status = r.status || 502;
@@ -746,6 +821,7 @@ async function callOpenAI(userPrompt, attempt) {
       return { ok: true, status: 200, rawText };
     } catch (err) {
       clearTimeout(timeoutId);
+      if (reqSignal) reqSignal.removeEventListener("abort", onClientAbort);
 
       const msg = String(err?.message || err);
       const aborted =
@@ -780,21 +856,69 @@ export async function POST(req) {
   if (INTERNAL_KEY) {
     const auth = req.headers.get("authorization") || "";
     if (auth !== `Bearer ${INTERNAL_KEY}`) {
-      return okJson({ error: "Unauthorized", reason: "unauthorized" });
+      return errorJson({ error: "Unauthorized", reason: "unauthorized" }, 401);
     }
   }
   if (!process.env.OPENAI_API_KEY) {
-    return okJson({
-      error: "Missing OpenAI API key",
-      reason: "missing_api_key",
-    });
+    return errorJson(
+      {
+        error: "Missing OpenAI API key",
+        reason: "missing_api_key",
+      },
+      500,
+    );
+  }
+
+  // Rate limiting per IP (best-effort, survives warm invocations)
+  const clientIp =
+    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+    req.headers.get("x-real-ip") ||
+    "unknown";
+  if (!rateLimitOk(clientIp)) {
+    const retryAfterSec = Math.ceil(
+      (RATE_LIMIT_WINDOW_MS -
+        (Date.now() - (__rateLimiter.get(clientIp)?.start || Date.now()))) /
+        1000,
+    );
+    const res = errorJson(
+      { error: "Too many requests. Try again later.", reason: "rate_limited" },
+      429,
+    );
+    res.headers.set("Retry-After", String(Math.max(1, retryAfterSec)));
+    return res;
+  }
+
+  const __reqStart = Date.now();
+  /** Stamp a response with timing header */
+  function withTiming(res) {
+    res.headers.set("X-Response-Time", `${Date.now() - __reqStart}ms`);
+    return res;
+  }
+
+  // Body size guard: reject oversized payloads before parsing
+  const contentLength = parseInt(req.headers.get("content-length") || "0", 10);
+  if (contentLength > MAX_BODY_SIZE) {
+    return errorJson(
+      { error: "Request body too large", reason: "body_too_large" },
+      413,
+    );
   }
 
   let body;
   try {
-    body = await req.json();
+    const rawBody = await req.text();
+    if (rawBody.length > MAX_BODY_SIZE) {
+      return errorJson(
+        { error: "Request body too large", reason: "body_too_large" },
+        413,
+      );
+    }
+    body = JSON.parse(rawBody);
   } catch {
-    return okJson({ error: "Invalid JSON body", reason: "invalid_json" });
+    return errorJson(
+      { error: "Invalid JSON body", reason: "invalid_json" },
+      400,
+    );
   }
 
   const echipe = typeof body?.echipe === "string" ? body.echipe.trim() : "";
@@ -810,7 +934,10 @@ export async function POST(req) {
   const matchId = Math.max(0, parseInt(body?.match_id, 10) || 0);
 
   if (!echipe || !liga) {
-    return okJson({ error: "Date incomplete", reason: "missing_fields" });
+    return errorJson(
+      { error: "Date incomplete", reason: "missing_fields" },
+      400,
+    );
   }
 
   let contextSignature = "";
@@ -842,20 +969,14 @@ export async function POST(req) {
       { status: 200 },
     );
     res.headers.set("Cache-Control", "public, max-age=60");
-    return withCors(res);
+    console.log(`✅ [cache-hit] ${echipe} | ${String(mode || "analysis")} | ${Date.now() - __reqStart}ms`);
+    return withCors(withTiming(res));
   }
 
-  const promptInsights = `
-You are an Elite Sharp Value Betting Analyst specialized in spotting mispriced markets through xG modeling, BTTS trends, Over/Under leans, game tempo and high-impact player props.
+  // ─── Insights mode: system prompt (stable → OpenAI prefix caching) ───
+  const insightsSystemPrompt = `You are an Elite Sharp Value Betting Analyst specialized in spotting mispriced markets through xG modeling, BTTS trends, Over/Under leans, game tempo and high-impact player props.
 
 Return ONLY a single valid JSON object (no extra text, no explanations, no Markdown).
-
-INPUT:
-Match: ${echipe}
-Competition: ${liga}
-Current status: ${status}
-Season focus: 2025/2026 (use the most current season context available)
-${promptContextBlock}
 
 GOAL:
 Deliver ultra-sharp DATA ONLY for a frontend that renders:
@@ -909,7 +1030,7 @@ REQUIRED JSON SCHEMA:
       "highlights": [{ "label": string, "value": number, "index": number }]
     } | null
   },
-  "quickSummary": string, // 5–6 bullets, each starts with "• " and uses \\n for new lines
+  "quickSummary": string,
   "confidence": number,
   "notes": string
 }
@@ -918,14 +1039,21 @@ NOTES:
 - highlights.index is the position in the series (0-based). Keep highlights to max 4 per team and make them betting-relevant (attacking output, defensive solidity, goal threat, set-piece involvement).
 - illustrations.summary can be short (1 sentence) and must be neutral.
 - quickSummary must be compact, scannable and loaded with sharp betting angles.
-- notes should briefly explain the strongest quantified edge and mention when venue bias was capped.
-`;
+- notes should briefly explain the strongest quantified edge and mention when venue bias was capped.`;
+
+  // ─── Insights mode: user prompt (dynamic per match) ───
+  const insightsUserPrompt = `INPUT:
+Match: ${echipe}
+Competition: ${liga}
+Current status: ${status}
+Season focus: 2025/2026 (use the most current season context available)
+${promptContextBlock}`;
 
   // MODE: insights (JSON for charts/illustrations)
   if (String(mode || "analysis").toLowerCase() === "insights") {
     // ---- Optional: enrich prompt with CURRENT squads from football-data.org ----
 
-    let resp = await callOpenAI(promptInsights, 1);
+    let resp = await callOpenAI(insightsSystemPrompt, insightsUserPrompt, 1, req.signal);
 
     if (!resp.ok) {
       console.error("❌ OpenAI error (insights):", resp);
@@ -948,10 +1076,10 @@ NOTES:
       insights = JSON.parse(jsonText);
     } catch (e) {
       // Retry once with stricter instruction
-      const strict =
-        promptInsights +
+      const strictUser =
+        insightsUserPrompt +
         "\n\nIMPORTANT: Răspunde acum cu DOAR JSON valid. Fără niciun caracter înainte sau după JSON.";
-      const resp2 = await callOpenAI(strict, 2);
+      const resp2 = await callOpenAI(insightsSystemPrompt, strictUser, 2, req.signal);
       if (!resp2.ok) {
         console.error("❌ OpenAI error (insights retry):", resp2);
         return errorJson(
@@ -969,22 +1097,22 @@ NOTES:
       try {
         insights = JSON.parse(jsonText2);
       } catch {
-        return okJson({
+        return errorJson({
           error: "Nu am putut genera un payload valid pentru grafice.",
           reason: "invalid_insights_json",
           ...(process.env.BETLOGIC_DEBUG === "1"
             ? { debug: { raw: raw2?.slice?.(0, 2000) || raw2 } }
             : {}),
-        });
+        }, 422);
       }
     }
 
     if (!isValidInsightsPayload(insights)) {
-      return okJson({
+      return errorJson({
         error: "Payload-ul pentru grafice nu a trecut validarea.",
         reason: "invalid_insights_shape",
         ...(process.env.BETLOGIC_DEBUG === "1" ? { debug: { insights } } : {}),
-      });
+      }, 422);
     }
 
     insights = blendInsightsWithAnchor(insights, modelAnchor);
@@ -1016,6 +1144,8 @@ NOTES:
 
       // ---- quick summary aliases (so UI can show it under charts) ----
       if (typeof insights?.quickSummary === "string") {
+        // Strip any markdown artifacts from the summary
+        insights.quickSummary = cleanPlainText(insights.quickSummary);
         // common aliases the UI might look for
         insights.summary = insights.quickSummary;
         insights.text = insights.quickSummary;
@@ -1025,11 +1155,12 @@ NOTES:
     cacheSet(cacheKey, insights);
     const res = NextResponse.json({ ok: true, insights }, { status: 200 });
     res.headers.set("Cache-Control", "public, max-age=60");
-    return withCors(res);
+    console.log(`✅ [insights] ${echipe} | ${Date.now() - __reqStart}ms`);
+    return withCors(withTiming(res));
   }
 
-  const promptBase = `
-Acționează ca un Analist Sportiv Senior și Specialist în Evaluarea Riscului Competitiv. 
+  // ─── Analysis mode: system prompt (stable → OpenAI prefix caching) ───
+  const analysisSystemPrompt = `Acționează ca un Analist Sportiv Senior și Specialist în Evaluarea Riscului Competitiv. 
 Generează o analiză tehnică, concisă și informativă pentru meciul specificat, bazată pe date, context sportiv și scenarii posibile.
 
 INSTRUCȚIUNI DE LIMBĂ ȘI STATUS (OBLIGATORIU):
@@ -1041,12 +1172,6 @@ INSTRUCȚIUNI DE FORMAT (CRITIC):
 - STRICT INTERZIS: Markdown, bold, italic, simboluri (#, *, _, \`), liste cu bullet-uri.
 - STRUCTURĂ: Folosește exact numerotarea 1), 2), 3) etc.
 - STIL: Analitic, neutru, precis, fără limbaj promoțional sau promisiuni.
-
-DATE DE INTRARE:
-Meci: ${echipe}
-Liga: ${liga}
-Status curent: ${status}
-${promptContextBlock}
 
 OBIECTIVUL ANALIZEI:
 Oferă o evaluare obiectivă a contextului sportiv și a dinamicii meciului, evidențiind factori relevanți și riscuri competitive.
@@ -1081,14 +1206,18 @@ B) Scenariu alternativ: condiții sau evenimente care pot modifica cursul estima
 Evaluează nivelul general de incertitudine al meciului (Scăzut / Mediu / Ridicat) și explică într-o singură propoziție de ce rezultatul poate fi previzibil sau volatil.
 
 NOTĂ FINALĂ (OBLIGATORIU):
-Analiza este generată automat pe baza datelor disponibile și are scop exclusiv informativ. 
+Analiza este generată automat pe baza datelor disponibile și are scop exclusiv informativ.`;
 
-`;
+  // ─── Analysis mode: user prompt (dynamic per match) ───
+  const analysisUserPrompt = `DATE DE INTRARE:
+Meci: ${echipe}
+Liga: ${liga}
+Status curent: ${status}
+${promptContextBlock}`;
 
   try {
     // Attempt 1: normal prompt
-    let prompt = promptBase;
-    let resp1 = await callOpenAI(prompt, 1);
+    let resp1 = await callOpenAI(analysisSystemPrompt, analysisUserPrompt, 1, req.signal);
 
     if (!resp1.ok) {
       console.error("❌ OpenAI error:", resp1);
@@ -1109,7 +1238,8 @@ Analiza este generată automat pe baza datelor disponibile și are scop exclusiv
     if (!isValidAnalysisText(analysis)) {
       const strictAddon = `\n\nIMPORTANT: Ai returnat un output invalid anterior. Acum respectă STRICT:\n- DOAR text simplu cu secțiuni 1) ... 5)\n- Fără cod/JSON/HTML/Markdown\n- Fără caractere { } < > sau backticks\n- Dacă nu poți respecta, răspunde exact: ANALIZA_INDISPONIBILA`;
 
-      const resp2 = await callOpenAI(promptBase + strictAddon, 2);
+      const strictUser = analysisUserPrompt + strictAddon;
+      const resp2 = await callOpenAI(analysisSystemPrompt, strictUser, 2, req.signal);
 
       if (!resp2.ok) {
         console.error("❌ OpenAI error (retry):", resp2);
@@ -1130,7 +1260,7 @@ Analiza este generată automat pe baza datelor disponibile și are scop exclusiv
         !isValidAnalysisText(analysis) ||
         /^ANALIZA_INDISPONIBILA\s*$/i.test(analysis)
       ) {
-        return okJson({
+        return errorJson({
           error: "Nu am putut genera o analiză validă. Încearcă din nou.",
           reason: "invalid_output",
           ...(process.env.BETLOGIC_DEBUG === "1"
@@ -1143,18 +1273,14 @@ Analiza este generată automat pe baza datelor disponibile și are scop exclusiv
                 },
               }
             : {}),
-        });
-      }
-    }
-
-    // If the output looks cut off (common with some models / low token limits), try one continuation.
+        }, 422); (common with some models / low token limits), try one continuation.
     if (
       !endsWithSentencePunctuation(analysis) ||
       !hasAllMainSections(analysis)
     ) {
-      const continuePrompt = `${promptBase}\n\nIMPORTANT: Textul de mai jos pare întrerupt sau incomplet. Continuă EXACT de unde ai rămas și finalizează analiza completă, respectând aceeași structură 1) ... 5) și nota finală.\n\nTEXT EXISTENT:\n${analysis}`;
+      const continueUser = `${analysisUserPrompt}\n\nIMPORTANT: Textul de mai jos pare întrerupt sau incomplet. Continuă EXACT de unde ai rămas și finalizează analiza completă, respectând aceeași structură 1) ... 5) și nota finală.\n\nTEXT EXISTENT:\n${analysis}`;
 
-      const resp3 = await callOpenAI(continuePrompt, 2);
+      const resp3 = await callOpenAI(analysisSystemPrompt, continueUser, 2, req.signal);
       if (resp3.ok) {
         const cont = cleanPlainText(resp3.rawText);
         // Append only if it looks valid and adds value
@@ -1186,7 +1312,7 @@ Analiza este generată automat pe baza datelor disponibile și are scop exclusiv
       !hasAllMainSections(analysis) ||
       !endsWithSentencePunctuation(analysis)
     ) {
-      return okJson({
+      return errorJson({
         error: "Analiza a fost întreruptă înainte de final. Încearcă din nou.",
         reason: "truncated_output",
         ...(process.env.BETLOGIC_DEBUG === "1"
@@ -1199,13 +1325,14 @@ Analiza este generată automat pe baza datelor disponibile și are scop exclusiv
               },
             }
           : {}),
-      });
+      }, 422);
     }
 
     cacheSet(cacheKey, analysis);
     const res = NextResponse.json({ ok: true, analysis }, { status: 200 });
     res.headers.set("Cache-Control", "public, max-age=60");
-    return withCors(res);
+    console.log(`✅ [analysis] ${echipe} | ${Date.now() - __reqStart}ms`);
+    return withCors(withTiming(res));
   } catch (err) {
     console.error("🔥 Server error:", err);
     return errorJson({ error: "Server error", reason: "server_error" }, 500);
