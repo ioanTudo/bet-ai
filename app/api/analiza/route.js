@@ -969,7 +969,9 @@ export async function POST(req) {
       { status: 200 },
     );
     res.headers.set("Cache-Control", "public, max-age=60");
-    console.log(`✅ [cache-hit] ${echipe} | ${String(mode || "analysis")} | ${Date.now() - __reqStart}ms`);
+    console.log(
+      `✅ [cache-hit] ${echipe} | ${String(mode || "analysis")} | ${Date.now() - __reqStart}ms`,
+    );
     return withCors(withTiming(res));
   }
 
@@ -1053,7 +1055,12 @@ ${promptContextBlock}`;
   if (String(mode || "analysis").toLowerCase() === "insights") {
     // ---- Optional: enrich prompt with CURRENT squads from football-data.org ----
 
-    let resp = await callOpenAI(insightsSystemPrompt, insightsUserPrompt, 1, req.signal);
+    let resp = await callOpenAI(
+      insightsSystemPrompt,
+      insightsUserPrompt,
+      1,
+      req.signal,
+    );
 
     if (!resp.ok) {
       console.error("❌ OpenAI error (insights):", resp);
@@ -1079,7 +1086,12 @@ ${promptContextBlock}`;
       const strictUser =
         insightsUserPrompt +
         "\n\nIMPORTANT: Răspunde acum cu DOAR JSON valid. Fără niciun caracter înainte sau după JSON.";
-      const resp2 = await callOpenAI(insightsSystemPrompt, strictUser, 2, req.signal);
+      const resp2 = await callOpenAI(
+        insightsSystemPrompt,
+        strictUser,
+        2,
+        req.signal,
+      );
       if (!resp2.ok) {
         console.error("❌ OpenAI error (insights retry):", resp2);
         return errorJson(
@@ -1097,22 +1109,30 @@ ${promptContextBlock}`;
       try {
         insights = JSON.parse(jsonText2);
       } catch {
-        return errorJson({
-          error: "Nu am putut genera un payload valid pentru grafice.",
-          reason: "invalid_insights_json",
-          ...(process.env.BETLOGIC_DEBUG === "1"
-            ? { debug: { raw: raw2?.slice?.(0, 2000) || raw2 } }
-            : {}),
-        }, 422);
+        return errorJson(
+          {
+            error: "Nu am putut genera un payload valid pentru grafice.",
+            reason: "invalid_insights_json",
+            ...(process.env.BETLOGIC_DEBUG === "1"
+              ? { debug: { raw: raw2?.slice?.(0, 2000) || raw2 } }
+              : {}),
+          },
+          422,
+        );
       }
     }
 
     if (!isValidInsightsPayload(insights)) {
-      return errorJson({
-        error: "Payload-ul pentru grafice nu a trecut validarea.",
-        reason: "invalid_insights_shape",
-        ...(process.env.BETLOGIC_DEBUG === "1" ? { debug: { insights } } : {}),
-      }, 422);
+      return errorJson(
+        {
+          error: "Payload-ul pentru grafice nu a trecut validarea.",
+          reason: "invalid_insights_shape",
+          ...(process.env.BETLOGIC_DEBUG === "1"
+            ? { debug: { insights } }
+            : {}),
+        },
+        422,
+      );
     }
 
     insights = blendInsightsWithAnchor(insights, modelAnchor);
@@ -1217,7 +1237,12 @@ ${promptContextBlock}`;
 
   try {
     // Attempt 1: normal prompt
-    let resp1 = await callOpenAI(analysisSystemPrompt, analysisUserPrompt, 1, req.signal);
+    let resp1 = await callOpenAI(
+      analysisSystemPrompt,
+      analysisUserPrompt,
+      1,
+      req.signal,
+    );
 
     if (!resp1.ok) {
       console.error("❌ OpenAI error:", resp1);
@@ -1239,7 +1264,12 @@ ${promptContextBlock}`;
       const strictAddon = `\n\nIMPORTANT: Ai returnat un output invalid anterior. Acum respectă STRICT:\n- DOAR text simplu cu secțiuni 1) ... 5)\n- Fără cod/JSON/HTML/Markdown\n- Fără caractere { } < > sau backticks\n- Dacă nu poți respecta, răspunde exact: ANALIZA_INDISPONIBILA`;
 
       const strictUser = analysisUserPrompt + strictAddon;
-      const resp2 = await callOpenAI(analysisSystemPrompt, strictUser, 2, req.signal);
+      const resp2 = await callOpenAI(
+        analysisSystemPrompt,
+        strictUser,
+        2,
+        req.signal,
+      );
 
       if (!resp2.ok) {
         console.error("❌ OpenAI error (retry):", resp2);
@@ -1260,27 +1290,39 @@ ${promptContextBlock}`;
         !isValidAnalysisText(analysis) ||
         /^ANALIZA_INDISPONIBILA\s*$/i.test(analysis)
       ) {
-        return errorJson({
-          error: "Nu am putut genera o analiză validă. Încearcă din nou.",
-          reason: "invalid_output",
-          ...(process.env.BETLOGIC_DEBUG === "1"
-            ? {
-                debug: {
-                  tip: "Model output failed validation",
-                  echipe,
-                  liga,
-                  status,
-                },
-              }
-            : {}),
-        }, 422); (common with some models / low token limits), try one continuation.
+        return errorJson(
+          {
+            error: "Nu am putut genera o analiză validă. Încearcă din nou.",
+            reason: "invalid_output",
+            ...(process.env.BETLOGIC_DEBUG === "1"
+              ? {
+                  debug: {
+                    tip: "Model output failed validation",
+                    echipe,
+                    liga,
+                    status,
+                  },
+                }
+              : {}),
+          },
+          422,
+        );
+      }
+    }
+
+    // If output is truncated (common with some models / low token limits), try one continuation.
     if (
       !endsWithSentencePunctuation(analysis) ||
       !hasAllMainSections(analysis)
     ) {
       const continueUser = `${analysisUserPrompt}\n\nIMPORTANT: Textul de mai jos pare întrerupt sau incomplet. Continuă EXACT de unde ai rămas și finalizează analiza completă, respectând aceeași structură 1) ... 5) și nota finală.\n\nTEXT EXISTENT:\n${analysis}`;
 
-      const resp3 = await callOpenAI(analysisSystemPrompt, continueUser, 2, req.signal);
+      const resp3 = await callOpenAI(
+        analysisSystemPrompt,
+        continueUser,
+        2,
+        req.signal,
+      );
       if (resp3.ok) {
         const cont = cleanPlainText(resp3.rawText);
         // Append only if it looks valid and adds value
@@ -1312,20 +1354,24 @@ ${promptContextBlock}`;
       !hasAllMainSections(analysis) ||
       !endsWithSentencePunctuation(analysis)
     ) {
-      return errorJson({
-        error: "Analiza a fost întreruptă înainte de final. Încearcă din nou.",
-        reason: "truncated_output",
-        ...(process.env.BETLOGIC_DEBUG === "1"
-          ? {
-              debug: {
-                tip: "Model output looked truncated",
-                echipe,
-                liga,
-                status,
-              },
-            }
-          : {}),
-      }, 422);
+      return errorJson(
+        {
+          error:
+            "Analiza a fost întreruptă înainte de final. Încearcă din nou.",
+          reason: "truncated_output",
+          ...(process.env.BETLOGIC_DEBUG === "1"
+            ? {
+                debug: {
+                  tip: "Model output looked truncated",
+                  echipe,
+                  liga,
+                  status,
+                },
+              }
+            : {}),
+        },
+        422,
+      );
     }
 
     cacheSet(cacheKey, analysis);
