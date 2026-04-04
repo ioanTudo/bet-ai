@@ -11,7 +11,8 @@ export default function Home() {
   useEffect(() => {
     fetch("/api/meciuri")
       .then((res) => res.json())
-      .then((data) => setGames(data.meciuri || []));
+      .then((data) => setGames(data.fixtures || data.meciuri || []))
+      .catch(() => setGames([]));
   }, []);
 
   const leagues = ["All", ...new Set(games.map((g) => g.liga))];
@@ -44,7 +45,6 @@ export default function Home() {
     });
 
     const data = await res.json();
-    console.log("✅ Analiza API:", data);
     setAnalysis(data.analysis || data.error || "No analysis returned.");
     setLoading(false);
   };

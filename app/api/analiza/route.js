@@ -69,7 +69,7 @@ function cacheSet(key, value, ttlMs = ANALYSIS_TTL_MS) {
 }
 
 function withCors(res) {
-  const origin = process.env.WP_ORIGIN || "*";
+  const origin = process.env.WP_ORIGIN || "https://betlogic.ro";
   res.headers.set("Access-Control-Allow-Origin", origin);
   res.headers.set("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.headers.set(

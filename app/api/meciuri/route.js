@@ -1,7 +1,33 @@
 import { NextResponse } from "next/server";
 
+/* ── In-memory response cache (survives Vercel warm invocations) ── */
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const _fixturesCache = (globalThis.__fixturesCache ??= new Map());
+
+function getCached(date) {
+  const entry = _fixturesCache.get(date);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > CACHE_TTL_MS) {
+    _fixturesCache.delete(date);
+    return null;
+  }
+  return entry.data;
+}
+
+function setCache(date, data) {
+  // Evict oldest if too many dates cached
+  if (_fixturesCache.size >= 10) {
+    const oldest = _fixturesCache.keys().next().value;
+    _fixturesCache.delete(oldest);
+  }
+  _fixturesCache.set(date, { data, ts: Date.now() });
+}
+
+/* ── Dedup concurrent requests for the same date ── */
+const _inflight = (globalThis.__fixturesInflight ??= new Map());
+
 function withCors(res) {
-  const origin = process.env.WP_ORIGIN || "*"; // set WP_ORIGIN in prod to your WP domain
+  const origin = process.env.WP_ORIGIN || "https://betlogic.ro";
   res.headers.set("Access-Control-Allow-Origin", origin);
   res.headers.set("Access-Control-Allow-Methods", "GET, OPTIONS");
   res.headers.set(
@@ -63,7 +89,32 @@ export async function GET(req) {
       ? dateParam
       : new Date().toISOString().slice(0, 10);
 
-  try {
+  // 1. Check in-memory cache
+  const cached = getCached(date);
+  if (cached) {
+    const res = NextResponse.json(cached);
+    res.headers.set("Cache-Control", "public, max-age=60, s-maxage=300");
+    res.headers.set("X-Cache", "HIT");
+    return withCors(res);
+  }
+
+  // 2. Dedup concurrent requests for the same date
+  if (_inflight.has(date)) {
+    try {
+      const data = await _inflight.get(date);
+      const res = NextResponse.json(data);
+      res.headers.set("Cache-Control", "public, max-age=60, s-maxage=300");
+      res.headers.set("X-Cache", "DEDUP");
+      return withCors(res);
+    } catch {
+      return withCors(
+        NextResponse.json({ date, fixtures: [] }, { status: 200 }),
+      );
+    }
+  }
+
+  // 3. Fetch from API-Sports
+  const fetchPromise = (async () => {
     const res = await fetch(
       `https://v3.football.api-sports.io/fixtures?date=${encodeURIComponent(
         date,
@@ -80,8 +131,14 @@ export async function GET(req) {
 
     if (!res.ok) {
       console.error("API-Football error:", res.status, data);
-      return withCors(
-        NextResponse.json({ date, fixtures: [] }, { status: 200 }),
+      return { date, fixtures: [] };
+    }
+
+    // Log remaining API quota from response headers
+    const remaining = res.headers.get("x-ratelimit-requests-remaining");
+    if (remaining !== null && Number(remaining) < 20) {
+      console.warn(
+        `[meciuri] API-Sports quota low: ${remaining} requests remaining`,
       );
     }
 
@@ -118,12 +175,24 @@ export async function GET(req) {
           (fx) => !isWomensContext(fx.league, fx.home_team, fx.away_team),
         ) || [];
 
-    return withCors(
-      NextResponse.json({ date, count: fixtures.length, fixtures }),
-    );
+    const result = { date, count: fixtures.length, fixtures };
+    setCache(date, result);
+    return result;
+  })();
+
+  _inflight.set(date, fetchPromise);
+
+  try {
+    const result = await fetchPromise;
+    const res = NextResponse.json(result);
+    res.headers.set("Cache-Control", "public, max-age=60, s-maxage=300");
+    res.headers.set("X-Cache", "MISS");
+    return withCors(res);
   } catch (err) {
     console.error("Server error in /api/meciuri:", err);
     return withCors(NextResponse.json({ date, fixtures: [] }, { status: 200 }));
+  } finally {
+    _inflight.delete(date);
   }
 }
 
@@ -131,8 +200,3 @@ export async function OPTIONS() {
   const res = new NextResponse(null, { status: 204 });
   return withCors(res);
 }
-
-console.log("ENV CHECK:", {
-  APISPORTS_KEY: !!process.env.APISPORTS_KEY,
-  OPENROUTER_API_KEY: !!process.env.OPENROUTER_API_KEY,
-});
