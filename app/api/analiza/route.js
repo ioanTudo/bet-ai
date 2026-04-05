@@ -116,6 +116,49 @@ function cleanPlainText(input) {
   return s;
 }
 
+function extractSummaryLines(raw) {
+  if (Array.isArray(raw)) {
+    return raw
+      .map((line) => String(line || "").trim())
+      .filter(Boolean)
+      .map((line) => line.replace(/^\s*[-•*–]\s*/, "").trim())
+      .filter(Boolean);
+  }
+
+  let s = String(raw || "");
+  if (!s.trim()) return [];
+
+  s = s.replace(/```[\s\S]*?```/g, "");
+  s = s.replace(/`+/g, "");
+  s = s.replace(/\[(.*?)\]\((.*?)\)/g, "$1");
+  s = s.replace(/\r\n/g, "\n").trim();
+
+  let lines = s
+    .split("\n")
+    .map((line) => String(line || "").trim())
+    .filter(Boolean);
+
+  // Some models collapse bullet lines into a single paragraph separated by bullets.
+  if (lines.length <= 1 && /[•\u2022]/.test(s)) {
+    lines = s
+      .split(/[•\u2022]/)
+      .map((line) => String(line || "").trim())
+      .filter(Boolean);
+  }
+
+  return lines
+    .map((line) => line.replace(/^\s*[-•*–]\s*/, "").trim())
+    .filter(Boolean);
+}
+
+function normalizeQuickSummary(raw) {
+  const lines = extractSummaryLines(raw);
+  return {
+    lines,
+    text: lines.join("\n").trim(),
+  };
+}
+
 function looksLikeCodeOrMarkup(text) {
   const s = String(text || "");
   if (!s.trim()) return false;
@@ -259,9 +302,19 @@ function isValidInsightsPayload(obj) {
 
   // --- quickSummary (required) ---
   if (typeof obj?.quickSummary !== "string") return false;
-  const qs = obj.quickSummary.trim();
-  // allow longer summaries (models often produce 8–12 sentences)
+  const normalizedSummary = normalizeQuickSummary(obj.quickSummary);
+  const qs = normalizedSummary.text;
   if (qs.length < 20 || qs.length > 2000) return false;
+  if (normalizedSummary.lines.length < 5 || normalizedSummary.lines.length > 6)
+    return false;
+  if (
+    normalizedSummary.lines.some(
+      (line) =>
+        line.length < 8 || line.length > 160 || looksLikeCodeOrMarkup(line),
+    )
+  ) {
+    return false;
+  }
 
   const ci = Number(obj?.confidence);
   if (!Number.isFinite(ci) || !Number.isInteger(ci) || ci < 0 || ci > 100)
@@ -932,6 +985,7 @@ export async function POST(req) {
       : {};
   const postId = Math.max(0, parseInt(body?.post_id, 10) || 0);
   const matchId = Math.max(0, parseInt(body?.match_id, 10) || 0);
+  const normalizedMode = String(mode || "analysis").trim().toLowerCase();
 
   if (!echipe || !liga) {
     return errorJson(
@@ -956,21 +1010,21 @@ export async function POST(req) {
 
   // Best-effort cache to avoid repeated calls (improves speed + reduces 502s)
   const cacheKey = `${INSIGHTS_SCHEMA_VERSION}|${String(
-    mode || "analysis",
+    normalizedMode || "analysis",
   ).trim()}|${String(echipe).trim()}|${String(liga).trim()}|${String(
     status || "",
   ).trim()}|${contextSignature}`;
   const cached = cacheGet(cacheKey);
   if (cached) {
     const res = NextResponse.json(
-      mode && String(mode).toLowerCase() === "insights"
+      normalizedMode === "insights"
         ? { ok: true, insights: cached }
         : { ok: true, analysis: cached },
       { status: 200 },
     );
-    res.headers.set("Cache-Control", "public, max-age=60");
+    res.headers.set("Cache-Control", "private, no-store");
     console.log(
-      `✅ [cache-hit] ${echipe} | ${String(mode || "analysis")} | ${Date.now() - __reqStart}ms`,
+      `✅ [cache-hit] ${echipe} | ${normalizedMode || "analysis"} | ${Date.now() - __reqStart}ms`,
     );
     return withCors(withTiming(res));
   }
@@ -1052,7 +1106,7 @@ Season focus: 2025/2026 (use the most current season context available)
 ${promptContextBlock}`;
 
   // MODE: insights (JSON for charts/illustrations)
-  if (String(mode || "analysis").toLowerCase() === "insights") {
+  if (normalizedMode === "insights") {
     // ---- Optional: enrich prompt with CURRENT squads from football-data.org ----
 
     let resp = await callOpenAI(
@@ -1164,17 +1218,19 @@ ${promptContextBlock}`;
 
       // ---- quick summary aliases (so UI can show it under charts) ----
       if (typeof insights?.quickSummary === "string") {
-        // Strip any markdown artifacts from the summary
-        insights.quickSummary = cleanPlainText(insights.quickSummary);
+        const normalizedSummary = normalizeQuickSummary(insights.quickSummary);
+        insights.quickSummary = normalizedSummary.text;
+        insights.quickSummaryLines = normalizedSummary.lines;
         // common aliases the UI might look for
         insights.summary = insights.quickSummary;
+        insights.summaryLines = normalizedSummary.lines;
         insights.text = insights.quickSummary;
       }
     } catch (e) {}
 
     cacheSet(cacheKey, insights);
     const res = NextResponse.json({ ok: true, insights }, { status: 200 });
-    res.headers.set("Cache-Control", "public, max-age=60");
+    res.headers.set("Cache-Control", "private, no-store");
     console.log(`✅ [insights] ${echipe} | ${Date.now() - __reqStart}ms`);
     return withCors(withTiming(res));
   }
@@ -1310,12 +1366,12 @@ ${promptContextBlock}`;
       }
     }
 
-    // If output is truncated (common with some models / low token limits), try one continuation.
+    // If output looks truncated, prefer a clean full retry instead of merging partial drafts.
     if (
       !endsWithSentencePunctuation(analysis) ||
       !hasAllMainSections(analysis)
     ) {
-      const continueUser = `${analysisUserPrompt}\n\nIMPORTANT: Textul de mai jos pare întrerupt sau incomplet. Continuă EXACT de unde ai rămas și finalizează analiza completă, respectând aceeași structură 1) ... 5) și nota finală.\n\nTEXT EXISTENT:\n${analysis}`;
+      const continueUser = `${analysisUserPrompt}\n\nIMPORTANT: Răspunsul anterior a părut întrerupt sau incomplet. Regenerează de la zero analiza FINALĂ completă, terminată, respectând exact structura 1) ... 5) și nota finală. Nu continua textul vechi, ci rescrie varianta completă finală.`;
 
       const resp3 = await callOpenAI(
         analysisSystemPrompt,
@@ -1325,27 +1381,12 @@ ${promptContextBlock}`;
       );
       if (resp3.ok) {
         const cont = cleanPlainText(resp3.rawText);
-        // Append only if it looks valid and adds value
-        if (isValidAnalysisText(cont)) {
-          // Avoid duplicating sections by trimming possible repeated prefix
-          const contTrimmed = cont.replace(
-            /^\s*1\)\s+[\s\S]*?(?=(\n\s*4\)|\n\s*5\)|$))/m,
-            (m) => m,
-          );
-          const merged = `${analysis}\n\n${contTrimmed}`.trim();
-          // Keep the merged output only if it now looks complete
-          if (
-            hasAllMainSections(merged) &&
-            endsWithSentencePunctuation(merged)
-          ) {
-            analysis = merged;
-          } else if (
-            hasAllMainSections(cont) &&
-            endsWithSentencePunctuation(cont)
-          ) {
-            // If the continuation alone is better/complete, prefer it
-            analysis = cont;
-          }
+        if (
+          isValidAnalysisText(cont) &&
+          hasAllMainSections(cont) &&
+          endsWithSentencePunctuation(cont)
+        ) {
+          analysis = cont;
         }
       }
     }
@@ -1376,7 +1417,7 @@ ${promptContextBlock}`;
 
     cacheSet(cacheKey, analysis);
     const res = NextResponse.json({ ok: true, analysis }, { status: 200 });
-    res.headers.set("Cache-Control", "public, max-age=60");
+    res.headers.set("Cache-Control", "private, no-store");
     console.log(`✅ [analysis] ${echipe} | ${Date.now() - __reqStart}ms`);
     return withCors(withTiming(res));
   } catch (err) {
