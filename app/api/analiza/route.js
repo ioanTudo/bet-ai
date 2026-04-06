@@ -766,7 +766,10 @@ async function callOpenAI(systemPrompt, userPrompt, attempt, reqSignal) {
   // systemPrompt: stable instructions (enables OpenAI prefix caching)
   // userPrompt:   per-request dynamic content
   // reqSignal:    optional AbortSignal from the incoming request
-  const maxAttempts = 3;
+  const maxAttempts = Math.max(
+    1,
+    Math.min(3, Number(process.env.OPENAI_MAX_ATTEMPTS || 2) || 2),
+  );
   const baseTimeoutMs = Number(process.env.OPENAI_TIMEOUT_MS || 35000);
 
   const isRetryableStatus = (status) =>
