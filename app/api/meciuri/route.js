@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 
+export const dynamic = "force-dynamic";
+
 /* ── In-memory response cache (survives Vercel warm invocations) ── */
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const _fixturesCache = (globalThis.__fixturesCache ??= new Map());
@@ -32,13 +34,43 @@ function withCors(res) {
   res.headers.set("Access-Control-Allow-Methods", "GET, OPTIONS");
   res.headers.set(
     "Access-Control-Allow-Headers",
-    "Content-Type, Authorization",
+    "Content-Type, Authorization, X-Timezone",
   );
   return res;
 }
 
 function safeStr(v) {
   return typeof v === "string" ? v : v == null ? "" : String(v);
+}
+
+function getDateForTimeZone(timeZone) {
+  const fallback = new Date().toISOString().slice(0, 10);
+  const normalizedTimeZone = safeStr(timeZone).trim();
+
+  if (!normalizedTimeZone) return fallback;
+
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: normalizedTimeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(new Date());
+
+    const dateParts = Object.fromEntries(
+      parts
+        .filter(({ type }) => type !== "literal")
+        .map(({ type, value }) => [type, value]),
+    );
+
+    if (dateParts.year && dateParts.month && dateParts.day) {
+      return `${dateParts.year}-${dateParts.month}-${dateParts.day}`;
+    }
+  } catch (error) {
+    console.warn("[meciuri] Invalid timezone, falling back to UTC:", error);
+  }
+
+  return fallback;
 }
 
 const WOMENS_PATTERNS = [
@@ -84,16 +116,18 @@ export async function GET(req) {
 
   const urlObj = new URL(req.url);
   const dateParam = urlObj.searchParams.get("date");
+  const timezoneHeader =
+    req.headers.get("x-timezone") || req.headers.get("x-vercel-ip-timezone");
   const date =
     dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam)
       ? dateParam
-      : new Date().toISOString().slice(0, 10);
+      : getDateForTimeZone(timezoneHeader);
 
   // 1. Check in-memory cache
   const cached = getCached(date);
   if (cached) {
     const res = NextResponse.json(cached);
-    res.headers.set("Cache-Control", "public, max-age=60, s-maxage=300");
+    res.headers.set("Cache-Control", "private, no-store, max-age=0");
     res.headers.set("X-Cache", "HIT");
     return withCors(res);
   }
@@ -103,7 +137,7 @@ export async function GET(req) {
     try {
       const data = await _inflight.get(date);
       const res = NextResponse.json(data);
-      res.headers.set("Cache-Control", "public, max-age=60, s-maxage=300");
+      res.headers.set("Cache-Control", "private, no-store, max-age=0");
       res.headers.set("X-Cache", "DEDUP");
       return withCors(res);
     } catch {
@@ -154,9 +188,11 @@ export async function GET(req) {
             match_id: fixture?.id ?? null,
             kickoff: fixture?.date ?? null,
             status_raw: fixture?.status?.short ?? "",
+            status: fixture?.status?.short ?? "",
 
             league_id: league?.id ?? null,
             league: safeStr(league?.name),
+            liga: safeStr(league?.name),
             country: safeStr(league?.country),
             league_logo: safeStr(league?.logo),
 
@@ -169,6 +205,7 @@ export async function GET(req) {
             away_logo: safeStr(away?.logo),
 
             stadium: safeStr(fixture?.venue?.name),
+            echipe: `${safeStr(home?.name)} vs ${safeStr(away?.name)}`,
           };
         })
         .filter(
@@ -185,7 +222,7 @@ export async function GET(req) {
   try {
     const result = await fetchPromise;
     const res = NextResponse.json(result);
-    res.headers.set("Cache-Control", "public, max-age=60, s-maxage=300");
+    res.headers.set("Cache-Control", "private, no-store, max-age=0");
     res.headers.set("X-Cache", "MISS");
     return withCors(res);
   } catch (err) {

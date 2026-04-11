@@ -74,10 +74,68 @@ function withCors(res) {
   res.headers.set("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.headers.set(
     "Access-Control-Allow-Headers",
-    "Content-Type, Authorization",
+    "Content-Type, Authorization, X-BetLogic-Internal",
   );
   res.headers.set("Access-Control-Allow-Credentials", "true");
   return res;
+}
+
+function hasValidInternalAuth(req) {
+  if (!INTERNAL_KEY) return false;
+
+  const candidates = [
+    req.headers.get("authorization") || "",
+    req.headers.get("x-betlogic-internal") || "",
+  ];
+
+  return candidates.some((candidate) => {
+    let value = String(candidate || "").trim();
+    if (!value) return false;
+    if (value.toLowerCase().startsWith("bearer ")) {
+      value = value.slice(7).trim();
+    }
+    return value === INTERNAL_KEY;
+  });
+}
+
+function isSameOriginBrowserRequest(req) {
+  const origin = (req.headers.get("origin") || "").trim();
+  const referer = (req.headers.get("referer") || "").trim();
+  const secFetchSite = (req.headers.get("sec-fetch-site") || "").toLowerCase();
+  const secFetchMode = (req.headers.get("sec-fetch-mode") || "").toLowerCase();
+
+  let requestOrigin = "";
+  try {
+    requestOrigin = new URL(req.url).origin;
+  } catch {
+    requestOrigin = "";
+  }
+
+  if (!requestOrigin) return false;
+
+  const originMatches =
+    origin === requestOrigin ||
+    (referer !== "" && referer.startsWith(`${requestOrigin}/`));
+
+  if (!originMatches) return false;
+
+  if (
+    secFetchSite &&
+    secFetchSite !== "same-origin" &&
+    secFetchSite !== "same-site"
+  ) {
+    return false;
+  }
+
+  if (
+    secFetchMode &&
+    secFetchMode !== "cors" &&
+    secFetchMode !== "same-origin"
+  ) {
+    return false;
+  }
+
+  return true;
 }
 
 function okJson(payload) {
@@ -909,11 +967,11 @@ async function callOpenAI(systemPrompt, userPrompt, attempt, reqSignal) {
 }
 
 export async function POST(req) {
-  if (INTERNAL_KEY) {
-    const auth = req.headers.get("authorization") || "";
-    if (auth !== `Bearer ${INTERNAL_KEY}`) {
-      return errorJson({ error: "Unauthorized", reason: "unauthorized" }, 401);
-    }
+  const authorizedInternal = hasValidInternalAuth(req);
+  const sameOriginBrowser = isSameOriginBrowserRequest(req);
+
+  if (!authorizedInternal && !sameOriginBrowser) {
+    return errorJson({ error: "Unauthorized", reason: "unauthorized" }, 401);
   }
   if (!process.env.OPENAI_API_KEY) {
     return errorJson(
@@ -988,7 +1046,9 @@ export async function POST(req) {
       : {};
   const postId = Math.max(0, parseInt(body?.post_id, 10) || 0);
   const matchId = Math.max(0, parseInt(body?.match_id, 10) || 0);
-  const normalizedMode = String(mode || "analysis").trim().toLowerCase();
+  const normalizedMode = String(mode || "analysis")
+    .trim()
+    .toLowerCase();
 
   if (!echipe || !liga) {
     return errorJson(

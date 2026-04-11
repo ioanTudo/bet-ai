@@ -1,5 +1,32 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
+
+const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+
+function formatLocalDate(date = new Date()) {
+  const year = String(date.getFullYear());
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getBrowserTimeZone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
+function normalizeGame(game) {
+  const homeTeam = String(game?.home_team || "").trim();
+  const awayTeam = String(game?.away_team || "").trim();
+
+  return {
+    ...game,
+    liga: String(game?.liga || game?.league || "").trim(),
+    echipe:
+      String(game?.echipe || "").trim() ||
+      [homeTeam, awayTeam].filter(Boolean).join(" vs "),
+    status: String(game?.status || game?.status_raw || "").trim(),
+  };
+}
 
 export default function Home() {
   const [games, setGames] = useState([]);
@@ -7,15 +34,55 @@ export default function Home() {
   const [selectedMatch, setSelectedMatch] = useState("None");
   const [analysis, setAnalysis] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [loadedDate, setLoadedDate] = useState("");
+
+  const loadGames = useEffectEvent(async (forcedDate) => {
+    const currentDate = forcedDate || formatLocalDate();
+    const timeZone = getBrowserTimeZone();
+
+    try {
+      const res = await fetch(
+        `/api/meciuri?date=${encodeURIComponent(currentDate)}`,
+        {
+          cache: "no-store",
+          headers: timeZone ? { "x-timezone": timeZone } : undefined,
+        },
+      );
+      const data = await res.json();
+      const nextGames = (data.fixtures || data.meciuri || []).map(normalizeGame);
+
+      setGames(nextGames);
+      setLoadedDate(data.date || currentDate);
+    } catch {
+      setGames([]);
+      setLoadedDate(currentDate);
+    }
+  });
 
   useEffect(() => {
-    fetch("/api/meciuri")
-      .then((res) => res.json())
-      .then((data) => setGames(data.fixtures || data.meciuri || []))
-      .catch(() => setGames([]));
+    const refreshGames = () => loadGames(formatLocalDate());
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        refreshGames();
+      }
+    };
+
+    refreshGames();
+
+    const intervalId = window.setInterval(refreshGames, REFRESH_INTERVAL_MS);
+    window.addEventListener("focus", refreshGames);
+    window.addEventListener("pageshow", refreshGames);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", refreshGames);
+      window.removeEventListener("pageshow", refreshGames);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, []);
 
-  const leagues = ["All", ...new Set(games.map((g) => g.liga))];
+  const leagues = ["All", ...new Set(games.map((g) => g.liga).filter(Boolean))];
 
   const gamesByLeague =
     selectedLeague === "All"
@@ -38,20 +105,43 @@ export default function Home() {
     setLoading(true);
     setAnalysis(null);
 
-    const res = await fetch("/api/analiza", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(selectedMatchDetails),
-    });
+    try {
+      const res = await fetch("/api/analiza", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify(selectedMatchDetails),
+      });
 
-    const data = await res.json();
-    setAnalysis(data.analysis || data.error || "No analysis returned.");
-    setLoading(false);
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        throw new Error(
+          String(data?.error || data?.reason || `Request failed (${res.status})`),
+        );
+      }
+
+      setAnalysis(data?.analysis || data?.error || "No analysis returned.");
+    } catch (error) {
+      setAnalysis(
+        error instanceof Error
+          ? error.message
+          : "Could not generate the analysis.",
+      );
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
     <div style={{ padding: 32, fontFamily: "Arial" }}>
       <h2>⚽ BetChances – AI Match Analysis</h2>
+      {loadedDate && (
+        <p style={{ marginTop: 8, color: "#555" }}>
+          Showing matches for <strong>{loadedDate}</strong>
+        </p>
+      )}
 
       <label>
         League:
