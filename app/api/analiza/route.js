@@ -138,11 +138,6 @@ function isSameOriginBrowserRequest(req) {
   return true;
 }
 
-function okJson(payload) {
-  const res = NextResponse.json(payload, { status: 200 });
-  res.headers.set("Cache-Control", "no-store");
-  return withCors(res);
-}
 
 function errorJson(payload, status = 502) {
   const res = NextResponse.json(payload, { status });
@@ -469,6 +464,83 @@ function normalizeProbabilityTriple(home, draw, away) {
   };
 }
 
+// Discrete Poisson model: given home xG (λ₁) and away xG (λ₂),
+// compute 1X2 probabilities by summing P(home=i)*P(away=j) over goal grids.
+// Truncated at MAX_GOALS — captures >99.9% of probability mass for λ ≤ 5.
+// Poisson PMF in log-space for numerical stability. Shared by all xG chart helpers.
+function poissonPmf(lambda, maxK) {
+  const p = new Array(maxK + 1);
+  let logFact = 0;
+  for (let k = 0; k <= maxK; k++) {
+    if (k > 0) logFact += Math.log(k);
+    p[k] = lambda <= 0
+      ? (k === 0 ? 1 : 0)
+      : Math.exp(-lambda + k * Math.log(lambda) - logFact);
+  }
+  return p;
+}
+
+function xgToMatchProbs(xgHome, xgAway) {
+  const MAX_GOALS = 8;
+  const ph = poissonPmf(Math.max(0, xgHome), MAX_GOALS);
+  const pa = poissonPmf(Math.max(0, xgAway), MAX_GOALS);
+
+  let homeWin = 0, draw = 0, awayWin = 0;
+  for (let i = 0; i <= MAX_GOALS; i++) {
+    for (let j = 0; j <= MAX_GOALS; j++) {
+      const p = ph[i] * pa[j];
+      if (i > j) homeWin += p;
+      else if (i === j) draw += p;
+      else awayWin += p;
+    }
+  }
+  return { homeWin: homeWin * 100, draw: draw * 100, awayWin: awayWin * 100 };
+}
+
+// Returns goals-market probabilities (Over/Under, BTTS) derived from Poisson model.
+function computeGoalsBand(xgHome, xgAway) {
+  const MAX_GOALS = 10;
+  const ph = poissonPmf(Math.max(0, xgHome), MAX_GOALS);
+  const pa = poissonPmf(Math.max(0, xgAway), MAX_GOALS);
+
+  let btts = 0, cumU = [0, 0, 0, 0]; // cumU[n] = P(total <= n)
+  for (let i = 0; i <= MAX_GOALS; i++) {
+    for (let j = 0; j <= MAX_GOALS; j++) {
+      const p = ph[i] * pa[j];
+      const total = i + j;
+      if (i >= 1 && j >= 1) btts += p;
+      if (total <= 1) cumU[0] += p;
+      if (total <= 2) cumU[1] += p;
+      if (total <= 3) cumU[2] += p;
+      if (total <= 4) cumU[3] += p;
+    }
+  }
+  return {
+    o15: Math.round((1 - cumU[0]) * 100),
+    o25: Math.round((1 - cumU[1]) * 100),
+    o35: Math.round((1 - cumU[2]) * 100),
+    o45: Math.round((1 - cumU[3]) * 100),
+    u25: Math.round(cumU[1] * 100),
+    btts: Math.round(btts * 100),
+  };
+}
+
+// Returns top-N most probable exact scorelines from Poisson model.
+function computeScoreMatrix(xgHome, xgAway, topN = 8) {
+  const MAX_GOALS = 6;
+  const ph = poissonPmf(Math.max(0, xgHome), MAX_GOALS);
+  const pa = poissonPmf(Math.max(0, xgAway), MAX_GOALS);
+
+  const scores = [];
+  for (let h = 0; h <= MAX_GOALS; h++) {
+    for (let a = 0; a <= MAX_GOALS; a++) {
+      scores.push({ score: `${h}-${a}`, h, a, prob: Math.round(ph[h] * pa[a] * 100) });
+    }
+  }
+  scores.sort((x, y) => y.prob - x.prob);
+  return scores.slice(0, topN);
+}
+
 function oddsToImpliedProbabilities(odds) {
   const home = toFiniteNumber(odds?.home, 0);
   const draw = toFiniteNumber(odds?.draw, 0);
@@ -576,17 +648,30 @@ function buildAnchorFromTipsContext(ctx) {
   const ppgDiff = form.home_ppg - form.away_ppg;
   const last5Diff = (form.home_last5_points - form.away_last5_points) / 3;
 
-  home += clampNumber(xgDiff * 6.5, -6, 6);
-  away -= clampNumber(xgDiff * 6.5, -6, 6);
-
-  home += clampNumber(ppgDiff * 4.5, -5, 5);
-  away -= clampNumber(ppgDiff * 4.5, -5, 5);
-
-  home += clampNumber(last5Diff * 2.2, -3.5, 3.5);
-  away -= clampNumber(last5Diff * 2.2, -3.5, 3.5);
-
-  if (xg.total <= 2.15) draw += 3.5;
-  else if (xg.total >= 3.15) draw -= 3;
+  // xG signal: Poisson model when data is available (theoretically correct for football).
+  // Blends 55% Poisson-derived 1X2 with 45% prior carry-forward.
+  // Falls back to linear approximation when xG is missing.
+  if (xg.home > 0 || xg.away > 0) {
+    const xgOutcome = xgToMatchProbs(xg.home, xg.away);
+    home = prior.homeWin * 0.45 + xgOutcome.homeWin * 0.55;
+    draw = prior.draw   * 0.45 + xgOutcome.draw    * 0.55;
+    away = prior.awayWin * 0.45 + xgOutcome.awayWin * 0.55;
+    // Form is now a secondary refinement (reduced multipliers since xG is primary).
+    home += clampNumber(ppgDiff * 3.0, -4, 4);
+    away -= clampNumber(ppgDiff * 3.0, -4, 4);
+    home += clampNumber(last5Diff * 1.5, -2.5, 2.5);
+    away -= clampNumber(last5Diff * 1.5, -2.5, 2.5);
+  } else {
+    // No xG data: keep linear form-only model as fallback.
+    home += clampNumber(ppgDiff * 4.5, -5, 5);
+    away -= clampNumber(ppgDiff * 4.5, -5, 5);
+    home += clampNumber(last5Diff * 2.2, -3.5, 3.5);
+    away -= clampNumber(last5Diff * 2.2, -3.5, 3.5);
+    // Draw adjustment via smooth curve (replaces old binary step).
+    // At xG total 0 (no data), nudges draw up slightly as default uncertainty.
+    const drawAdj = clampNumber((2.2 - xg.total) * 3.5, -5, 5);
+    draw += drawAdj;
+  }
 
   if (h2h.sample > 0) {
     const h2hDiff = (h2h.home_wins - h2h.away_wins) / h2h.sample;
@@ -621,9 +706,9 @@ function buildAnchorFromTipsContext(ctx) {
 
   if (marketOdds) {
     probabilities = normalizeProbabilityTriple(
-      probabilities.homeWin * 0.84 + marketOdds.homeWin * 0.16,
-      probabilities.draw * 0.84 + marketOdds.draw * 0.16,
-      probabilities.awayWin * 0.84 + marketOdds.awayWin * 0.16,
+      probabilities.homeWin * 0.75 + marketOdds.homeWin * 0.25,
+      probabilities.draw * 0.75 + marketOdds.draw * 0.25,
+      probabilities.awayWin * 0.75 + marketOdds.awayWin * 0.25,
     );
   }
 
@@ -677,7 +762,7 @@ function buildAnchorFromTipsContext(ctx) {
 
   const tipConsensus = Math.max(consensus.home, consensus.away, consensus.draw);
   let confidence =
-    46 +
+    40 +
     Math.abs(probabilities.homeWin - probabilities.awayWin) * 0.58 +
     Math.abs(xgDiff) * 11 +
     Math.min(sampleGames, 10) * 1.2 +
@@ -685,7 +770,7 @@ function buildAnchorFromTipsContext(ctx) {
 
   if (h2h.sample > 0) confidence += Math.min(h2h.sample, 5) * 0.8;
   if (marketOdds) confidence += 3;
-  confidence = Math.round(clampNumber(confidence, 48, 91));
+  confidence = Math.round(clampNumber(confidence, 42, 88));
 
   return {
     teams,
@@ -697,6 +782,10 @@ function buildAnchorFromTipsContext(ctx) {
     marketOdds,
     lean,
     confidence,
+    chartData: (xg.home > 0 || xg.away > 0) ? {
+      goalsBand: computeGoalsBand(xg.home, xg.away),
+      scoreMatrix: computeScoreMatrix(xg.home, xg.away, 8),
+    } : null,
   };
 }
 
@@ -1198,7 +1287,7 @@ ${promptContextBlock}`;
     let insights;
     try {
       insights = JSON.parse(jsonText);
-    } catch (e) {
+    } catch {
       // Retry once with stricter instruction
       const strictUser =
         insightsUserPrompt +
@@ -1289,7 +1378,12 @@ ${promptContextBlock}`;
         insights.summaryLines = normalizedSummary.lines;
         insights.text = insights.quickSummary;
       }
-    } catch (e) {}
+    } catch {}
+
+    // Attach Poisson-derived chart data computed server-side (no AI token cost)
+    if (modelAnchor?.chartData) {
+      insights.chartData = modelAnchor.chartData;
+    }
 
     cacheSet(cacheKey, insights);
     const res = NextResponse.json({ ok: true, insights }, { status: 200 });

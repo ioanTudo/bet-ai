@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useEffectEvent, useState } from "react";
+import Link from "next/link";
 
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -30,10 +31,6 @@ function normalizeGame(game) {
 
 export default function Home() {
   const [games, setGames] = useState([]);
-  const [selectedLeague, setSelectedLeague] = useState("All");
-  const [selectedMatch, setSelectedMatch] = useState("None");
-  const [analysis, setAnalysis] = useState(null);
-  const [loading, setLoading] = useState(false);
   const [loadedDate, setLoadedDate] = useState("");
 
   const loadGames = useEffectEvent(async (forcedDate) => {
@@ -82,121 +79,75 @@ export default function Home() {
     };
   }, []);
 
-  const leagues = ["All", ...new Set(games.map((g) => g.liga).filter(Boolean))];
-
-  const gamesByLeague =
-    selectedLeague === "All"
-      ? games
-      : games.filter((g) => g.liga === selectedLeague);
-
-  const matchesInLeague = [
-    "None",
-    ...new Set(gamesByLeague.map((g) => g.echipe)),
-  ];
-
-  const selectedMatchDetails =
-    selectedMatch === "None"
-      ? null
-      : gamesByLeague.find((g) => g.echipe === selectedMatch);
-
-  const analyze = async () => {
-    if (!selectedMatchDetails) return;
-
-    setLoading(true);
-    setAnalysis(null);
-
-    try {
-      const res = await fetch("/api/analiza", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify(selectedMatchDetails),
-      });
-
-      const data = await res.json().catch(() => null);
-      if (!res.ok) {
-        throw new Error(
-          String(data?.error || data?.reason || `Request failed (${res.status})`),
-        );
-      }
-
-      setAnalysis(data?.analysis || data?.error || "No analysis returned.");
-    } catch (error) {
-      setAnalysis(
-        error instanceof Error
-          ? error.message
-          : "Could not generate the analysis.",
-      );
-    } finally {
-      setLoading(false);
+  const leagueMap = new Map();
+  for (const g of games) {
+    if (!g.liga) continue;
+    if (!leagueMap.has(g.liga)) {
+      leagueMap.set(g.liga, { name: g.liga, logo: g.league_logo, country: g.country, count: 0 });
     }
-  };
+    leagueMap.get(g.liga).count++;
+  }
+  const leagueGroups = [...leagueMap.values()];
 
   return (
-    <div style={{ padding: 32, fontFamily: "Arial" }}>
-      <h2>⚽ BetChances – AI Match Analysis</h2>
+    <div style={{ padding: 32, fontFamily: "Arial", maxWidth: 700 }}>
+      <h2>⚽ BetChances – Daily Matches</h2>
       {loadedDate && (
-        <p style={{ marginTop: 8, color: "#555" }}>
-          Showing matches for <strong>{loadedDate}</strong>
+        <p style={{ marginTop: 4, color: "#555" }}>
+          Matches for <strong>{loadedDate}</strong> · {games.length} total
         </p>
       )}
 
-      <label>
-        League:
-        <select
-          value={selectedLeague}
-          onChange={(e) => {
-            setSelectedLeague(e.target.value);
-            setSelectedMatch("None");
-            setAnalysis(null);
-          }}
-        >
-          {leagues.map((l) => (
-            <option key={l}>{l}</option>
-          ))}
-        </select>
-      </label>
+      <Link
+        href={loadedDate ? `/popular?date=${loadedDate}` : "/popular"}
+        style={{
+          display: "inline-block",
+          marginTop: 16,
+          marginBottom: 24,
+          padding: "10px 20px",
+          background: "#f0a500",
+          color: "#fff",
+          borderRadius: 8,
+          fontWeight: "bold",
+          textDecoration: "none",
+          fontSize: 15,
+        }}
+      >
+        ⭐ Popular Matches
+      </Link>
 
-      {selectedLeague !== "All" && (
-        <label style={{ marginLeft: 16 }}>
-          Match:
-          <select
-            value={selectedMatch}
-            onChange={(e) => {
-              setSelectedMatch(e.target.value);
-              setAnalysis(null);
+      <div style={{ marginTop: 8 }}>
+        {leagueGroups.length === 0 && (
+          <p style={{ color: "#999" }}>Loading leagues…</p>
+        )}
+        {leagueGroups.map((league) => (
+          <Link
+            key={league.name}
+            href={`/liga?name=${encodeURIComponent(league.name)}&date=${loadedDate}`}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              padding: "10px 14px",
+              marginBottom: 6,
+              border: "1px solid #e0e0e0",
+              borderRadius: 8,
+              textDecoration: "none",
+              color: "#111",
+              background: "#fafafa",
             }}
           >
-            {matchesInLeague.map((m) => (
-              <option key={m}>{m}</option>
-            ))}
-          </select>
-        </label>
-      )}
-
-      {selectedMatchDetails && (
-        <div style={{ marginTop: 24 }}>
-          <p>
-            <strong>{selectedMatchDetails.echipe}</strong>
-          </p>
-          <p>Status: {selectedMatchDetails.status}</p>
-
-          <button onClick={analyze} disabled={loading}>
-            {loading ? "Analyzing..." : "Analyze with AI"}
-          </button>
-
-          {analysis && (
-            <div style={{ marginTop: 16, background: "#f5f5f5", padding: 16 }}>
-              <h4>📊 AI Analysis</h4>
-              <pre style={{ whiteSpace: "pre-wrap", margin: 0 }}>
-                {analysis}
-              </pre>
-            </div>
-          )}
-        </div>
-      )}
+            {league.logo && (
+              <img src={league.logo} alt="" width={22} height={22} style={{ objectFit: "contain" }} />
+            )}
+            <span style={{ flex: 1, fontWeight: 500 }}>{league.name}</span>
+            {league.country && (
+              <span style={{ color: "#888", fontSize: 13 }}>{league.country}</span>
+            )}
+            <span style={{ color: "#aaa", fontSize: 13 }}>{league.count} matches</span>
+          </Link>
+        ))}
+      </div>
     </div>
   );
 }
