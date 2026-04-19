@@ -783,6 +783,7 @@ function buildAnchorFromTipsContext(ctx) {
     lean,
     confidence,
     chartData: (xg.home > 0 || xg.away > 0) ? {
+      xg: { home: Math.round(xg.home * 100) / 100, away: Math.round(xg.away * 100) / 100 },
       goalsBand: computeGoalsBand(xg.home, xg.away),
       scoreMatrix: computeScoreMatrix(xg.home, xg.away, 8),
     } : null,
